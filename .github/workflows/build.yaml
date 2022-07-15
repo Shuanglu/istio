@@ -36,7 +36,7 @@ jobs:
     - name: checkout
       uses: actions/checkout@v2.4.2
       with:
-        ref: shuang/${{ github.event.inputs.branch }}
+        ref: ${{ github.event.inputs.branch }}
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v2
     - name: Set up Docker Buildx
