@@ -27,7 +27,7 @@ import (
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/wellknown"
 	"github.com/golang/protobuf/ptypes/duration"
-	any "google.golang.org/protobuf/types/known/anypb"
+	anypb "google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
 	wrappers "google.golang.org/protobuf/types/known/wrapperspb"
@@ -40,6 +40,7 @@ import (
 	"istio.io/istio/pilot/pkg/networking/util"
 	authn_model "istio.io/istio/pilot/pkg/security/model"
 	"istio.io/istio/pilot/pkg/serviceregistry/provider"
+	"istio.io/istio/pilot/pkg/util/protoconv"
 	xdsfilters "istio.io/istio/pilot/pkg/xds/filters"
 	v3 "istio.io/istio/pilot/pkg/xds/v3"
 	istio_cluster "istio.io/istio/pkg/cluster"
@@ -59,7 +60,7 @@ var istioMtlsTransportSocketMatch = &structpb.Struct{
 // passthroughHttpProtocolOptions are http protocol options used for pass through clusters.
 // nolint
 // revive:disable-next-line
-var passthroughHttpProtocolOptions = util.MessageToAny(&http.HttpProtocolOptions{
+var passthroughHttpProtocolOptions = protoconv.MessageToAny(&http.HttpProtocolOptions{
 	UpstreamProtocolOptions: &http.HttpProtocolOptions_UseDownstreamProtocolConfig{
 		UseDownstreamProtocolConfig: &http.HttpProtocolOptions_UseDownstreamHttpConfig{
 			HttpProtocolOptions:  &core.Http1ProtocolOptions{},
@@ -104,8 +105,9 @@ type ClusterBuilder struct {
 	proxyIPAddresses  []string                 // IP addresses on which proxy is listening on.
 	configNamespace   string                   // Proxy config namespace.
 	// PushRequest to look for updates.
-	req   *model.PushRequest
-	cache model.XdsCache
+	req                   *model.PushRequest
+	cache                 model.XdsCache
+	credentialSocketExist bool
 }
 
 // NewClusterBuilder builds an instance of ClusterBuilder.
@@ -136,6 +138,9 @@ func NewClusterBuilder(proxy *model.Proxy, req *model.PushRequest, cache model.X
 			}
 		}
 		cb.clusterID = string(proxy.Metadata.ClusterID)
+		if proxy.Metadata.Raw[security.CredentialMetaDataName] == "true" {
+			cb.credentialSocketExist = true
+		}
 	}
 	return cb
 }
@@ -633,7 +638,7 @@ func (cb *ClusterBuilder) buildDefaultPassthroughCluster() *cluster.Cluster {
 		ClusterDiscoveryType: &cluster.Cluster_Type{Type: cluster.Cluster_ORIGINAL_DST},
 		ConnectTimeout:       cb.req.Push.Mesh.ConnectTimeout,
 		LbPolicy:             cluster.Cluster_CLUSTER_PROVIDED,
-		TypedExtensionProtocolOptions: map[string]*any.Any{
+		TypedExtensionProtocolOptions: map[string]*anypb.Any{
 			v3.HttpProtocolOptionsType: passthroughHttpProtocolOptions,
 		},
 	}
@@ -912,7 +917,7 @@ func (cb *ClusterBuilder) applyUpstreamTLSSettings(opts *buildClusterOpts, tls *
 	if tlsContext != nil {
 		c.cluster.TransportSocket = &core.TransportSocket{
 			Name:       wellknown.TransportSocketTls,
-			ConfigType: &core.TransportSocket_TypedConfig{TypedConfig: util.MessageToAny(tlsContext)},
+			ConfigType: &core.TransportSocket_TypedConfig{TypedConfig: protoconv.MessageToAny(tlsContext)},
 		}
 	}
 
@@ -1005,7 +1010,7 @@ func (cb *ClusterBuilder) buildUpstreamClusterTLSContext(opts *buildClusterOpts,
 		if tls.CredentialName != "" {
 			// If  credential name is specified at Destination Rule config and originating node is egress gateway, create
 			// SDS config for egress gateway to fetch key/cert at gateway agent.
-			authn_model.ApplyCustomSDSToClientCommonTLSContext(tlsContext.CommonTlsContext, tls)
+			authn_model.ApplyCustomSDSToClientCommonTLSContext(tlsContext.CommonTlsContext, tls, cb.credentialSocketExist)
 		} else {
 			// If CredentialName is not set fallback to files specified in DR.
 			res := security.SdsCertificateConfig{
@@ -1044,7 +1049,7 @@ func (cb *ClusterBuilder) buildUpstreamClusterTLSContext(opts *buildClusterOpts,
 		if tls.CredentialName != "" {
 			// If  credential name is specified at Destination Rule config and originating node is egress gateway, create
 			// SDS config for egress gateway to fetch key/cert at gateway agent.
-			authn_model.ApplyCustomSDSToClientCommonTLSContext(tlsContext.CommonTlsContext, tls)
+			authn_model.ApplyCustomSDSToClientCommonTLSContext(tlsContext.CommonTlsContext, tls, cb.credentialSocketExist)
 		} else {
 			// If CredentialName is not set fallback to file based approach
 			if tls.ClientCertificate == "" || tls.PrivateKey == "" {
@@ -1130,12 +1135,7 @@ func (cb *ClusterBuilder) setUseDownstreamProtocol(mc *MutableCluster) {
 }
 
 func http2ProtocolOptions() *core.Http2ProtocolOptions {
-	return &core.Http2ProtocolOptions{
-		// Envoy default value of 100 is too low for data path.
-		MaxConcurrentStreams: &wrappers.UInt32Value{
-			Value: 1073741824,
-		},
-	}
+	return &core.Http2ProtocolOptions{}
 }
 
 // nolint
@@ -1229,8 +1229,8 @@ func (mc *MutableCluster) build() *cluster.Cluster {
 				},
 			}
 		}
-		mc.cluster.TypedExtensionProtocolOptions = map[string]*any.Any{
-			v3.HttpProtocolOptionsType: util.MessageToAny(mc.httpProtocolOptions),
+		mc.cluster.TypedExtensionProtocolOptions = map[string]*anypb.Any{
+			v3.HttpProtocolOptionsType: protoconv.MessageToAny(mc.httpProtocolOptions),
 		}
 	}
 	return mc.cluster
@@ -1282,4 +1282,35 @@ func defaultTransportSocketMatch() *cluster.Cluster_TransportSocketMatch {
 		Match:           &structpb.Struct{},
 		TransportSocket: xdsfilters.RawBufferTransportSocket,
 	}
+}
+
+// buildExternalSDSCluster generates a cluster that acts as external SDS server
+func (cb *ClusterBuilder) buildExternalSDSCluster(addr string) *cluster.Cluster {
+	ep := &endpoint.LbEndpoint{
+		HostIdentifier: &endpoint.LbEndpoint_Endpoint{
+			Endpoint: &endpoint.Endpoint{
+				Address: &core.Address{
+					Address: &core.Address_Pipe{
+						Pipe: &core.Pipe{
+							Path: addr,
+						},
+					},
+				},
+			},
+		},
+	}
+	c := &cluster.Cluster{
+		Name:                 security.SDSExternalClusterName,
+		ClusterDiscoveryType: &cluster.Cluster_Type{Type: cluster.Cluster_STATIC},
+		ConnectTimeout:       cb.req.Push.Mesh.ConnectTimeout,
+		LoadAssignment: &endpoint.ClusterLoadAssignment{
+			ClusterName: security.SDSExternalClusterName,
+			Endpoints: []*endpoint.LocalityLbEndpoints{
+				{
+					LbEndpoints: []*endpoint.LbEndpoint{ep},
+				},
+			},
+		},
+	}
+	return c
 }
