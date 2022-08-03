@@ -28,4 +28,4 @@ COPY gcp_envoy_bootstrap.json /var/lib/istio/envoy/gcp_envoy_bootstrap_tmpl.json
 
 USER 1337:1337
 
-ENTRYPOINT ["/usr/local/bin/dlv", "--continue", "--accept-multiclient", "--listen=:40000", "--check-go-version=false", "--headless=true", "--api-version=2", "--log=true", "--log-output=debugger,debuglineerr,gdbwire,lldbout,rpc", "exec", "/usr/local/bin/pilot-discovery", "--"] 
+ENTRYPOINT ["/usr/local/bin/dlv", "--continue", "--accept-multiclient", "--listen=:40000", "--check-go-version=false", "--headless=true", "--api-version=2",  "exec", "/usr/local/bin/pilot-discovery", "--"] 
