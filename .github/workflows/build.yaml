@@ -23,6 +23,10 @@ on:
         description: 'component to build. "all" or "<specific component eg. pilot>'
         default: 'all'
         required: true
+      tag:
+        description: 'tag name of the image'
+        default: 'latest'
+        required: false
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
@@ -50,8 +54,8 @@ jobs:
       run: |
           if [[ ${{ github.event.inputs.component }} == 'all' ]]
           then 
-            HUB=${{ github.event.inputs.hub }} make DEBUG=1 docker.push; 
+            HUB=${{ github.event.inputs.hub }} TAG=${{ github.event.inputs.tag }} make DEBUG=1 docker.push; 
           else 
-            HUB=${{ github.event.inputs.hub }} make DEBUG=1 push.docker.${{ github.event.inputs.component }}
+            HUB=${{ github.event.inputs.hub }} TAG=${{ github.event.inputs.tag }} make DEBUG=1 push.docker.${{ github.event.inputs.component }}
           fi
 
