@@ -26,13 +26,13 @@ import (
 	listerv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 
-	"istio.io/istio/pilot/pkg/config/kube/crdclient"
 	"istio.io/istio/pilot/pkg/features"
 	"istio.io/istio/pilot/pkg/model"
 	"istio.io/istio/pilot/pkg/model/kstatus"
 	"istio.io/istio/pilot/pkg/serviceregistry/kube/controller"
 	"istio.io/istio/pilot/pkg/status"
 	"istio.io/istio/pkg/config"
+	"istio.io/istio/pkg/config/labels"
 	"istio.io/istio/pkg/config/schema/collection"
 	"istio.io/istio/pkg/config/schema/collections"
 	"istio.io/istio/pkg/config/schema/gvk"
@@ -78,11 +78,20 @@ type Controller struct {
 	// is only the case when we are the leader.
 	statusController *status.Controller
 	statusEnabled    *atomic.Bool
+
+	waitForCRD func(class config.GroupVersionKind, stop <-chan struct{}) bool
+
+	started atomic.Bool
 }
 
 var _ model.GatewayController = &Controller{}
 
-func NewController(client kube.Client, c model.ConfigStoreController, options controller.Options) *Controller {
+func NewController(
+	client kube.Client,
+	c model.ConfigStoreController,
+	waitForCRD func(class config.GroupVersionKind, stop <-chan struct{}) bool,
+	options controller.Options,
+) *Controller {
 	var ctl *status.Controller
 
 	nsInformer := client.KubeInformer().Core().V1().Namespaces().Informer()
@@ -95,14 +104,20 @@ func NewController(client kube.Client, c model.ConfigStoreController, options co
 		statusController:  ctl,
 		// Disabled by default, we will enable only if we win the leader election
 		statusEnabled: atomic.NewBool(false),
+		waitForCRD:    waitForCRD,
 	}
 
 	nsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
-			gatewayController.namespaceEvent(nil, obj)
+			ns := obj.(*corev1.Namespace)
+			gatewayController.namespaceEvent(nil, ns)
 		},
 		UpdateFunc: func(oldObj, newObj any) {
-			gatewayController.namespaceEvent(oldObj, newObj)
+			oldNs := oldObj.(*corev1.Namespace)
+			newNs := newObj.(*corev1.Namespace)
+			if !labels.Instance(oldNs.Labels).Equals(newNs.Labels) {
+				gatewayController.namespaceEvent(oldNs, newNs)
+			}
 		},
 	})
 
@@ -175,25 +190,20 @@ func (c *Controller) Reconcile(ps *model.PushContext) error {
 	if err != nil {
 		return fmt.Errorf("failed to list type TLSRoute: %v", err)
 	}
-	referencePolicy, err := c.cache.List(gvk.ReferencePolicy, metav1.NamespaceAll)
-	if err != nil {
-		return fmt.Errorf("failed to list type BackendPolicy: %v", err)
-	}
 	referenceGrant, err := c.cache.List(gvk.ReferenceGrant, metav1.NamespaceAll)
 	if err != nil {
 		return fmt.Errorf("failed to list type BackendPolicy: %v", err)
 	}
 
 	input := KubernetesResources{
-		GatewayClass:    deepCopyStatus(gatewayClass),
-		Gateway:         deepCopyStatus(gateway),
-		HTTPRoute:       deepCopyStatus(httpRoute),
-		TCPRoute:        deepCopyStatus(tcpRoute),
-		TLSRoute:        deepCopyStatus(tlsRoute),
-		ReferencePolicy: referencePolicy,
-		ReferenceGrant:  referenceGrant,
-		Domain:          c.domain,
-		Context:         NewGatewayContext(ps),
+		GatewayClass:   deepCopyStatus(gatewayClass),
+		Gateway:        deepCopyStatus(gateway),
+		HTTPRoute:      deepCopyStatus(httpRoute),
+		TCPRoute:       deepCopyStatus(tcpRoute),
+		TLSRoute:       deepCopyStatus(tlsRoute),
+		ReferenceGrant: referenceGrant,
+		Domain:         c.domain,
+		Context:        NewGatewayContext(ps),
 	}
 
 	if !input.hasResources() {
@@ -274,9 +284,14 @@ func (c *Controller) RegisterEventHandler(typ config.GroupVersionKind, handler m
 	// For all other types, do nothing as c.cache has been registered
 }
 
+func (c *Controller) HasStarted() bool {
+	return c.started.Load()
+}
+
 func (c *Controller) Run(stop <-chan struct{}) {
+	c.started.Store(true)
 	go func() {
-		if crdclient.WaitForCRD(gvk.GatewayClass, stop) {
+		if c.waitForCRD(gvk.GatewayClass, stop) {
 			gcc := NewClassController(c.client)
 			c.client.RunAndWait(stop)
 			gcc.Run(stop)
@@ -303,12 +318,12 @@ func (c *Controller) SecretAllowed(resourceName string, namespace string) bool {
 // when the labels change.
 // Note: we don't handle delete as a delete would also clean up any relevant gateway-api types which will
 // trigger its own event.
-func (c *Controller) namespaceEvent(oldObj any, newObj any) {
+func (c *Controller) namespaceEvent(oldNs, newNs *corev1.Namespace) {
 	// First, find all the label keys on the old/new namespace. We include NamespaceNameLabel
 	// since we have special logic to always allow this on namespace.
 	touchedNamespaceLabels := sets.New(NamespaceNameLabel)
-	touchedNamespaceLabels.InsertAll(getLabelKeys(oldObj)...)
-	touchedNamespaceLabels.InsertAll(getLabelKeys(newObj)...)
+	touchedNamespaceLabels.InsertAll(getLabelKeys(oldNs)...)
+	touchedNamespaceLabels.InsertAll(getLabelKeys(newNs)...)
 
 	// Next, we find all keys our Gateways actually reference.
 	c.stateMu.RLock()
@@ -325,20 +340,9 @@ func (c *Controller) namespaceEvent(oldObj any, newObj any) {
 }
 
 // getLabelKeys extracts all label keys from a namespace object.
-func getLabelKeys(obj any) []string {
-	if obj == nil {
+func getLabelKeys(ns *corev1.Namespace) []string {
+	if ns == nil {
 		return nil
-	}
-	ns, ok := obj.(*corev1.Namespace)
-	if !ok {
-		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-		if !ok {
-			return nil
-		}
-		ns, ok = tombstone.Obj.(*corev1.Namespace)
-		if !ok {
-			return nil
-		}
 	}
 	keys := make([]string, 0, len(ns.Labels))
 	for k := range ns.Labels {
@@ -386,5 +390,5 @@ func (kr KubernetesResources) hasResources() bool {
 		len(kr.HTTPRoute) > 0 ||
 		len(kr.TCPRoute) > 0 ||
 		len(kr.TLSRoute) > 0 ||
-		len(kr.ReferencePolicy) > 0
+		len(kr.ReferenceGrant) > 0
 }

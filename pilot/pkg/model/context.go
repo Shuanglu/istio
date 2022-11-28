@@ -33,6 +33,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 
 	meshconfig "istio.io/api/mesh/v1alpha1"
+	"istio.io/istio/pilot/pkg/features"
 	istionetworking "istio.io/istio/pilot/pkg/networking"
 	"istio.io/istio/pilot/pkg/trustbundle"
 	networkutil "istio.io/istio/pilot/pkg/util/network"
@@ -43,7 +44,9 @@ import (
 	"istio.io/istio/pkg/network"
 	"istio.io/istio/pkg/spiffe"
 	"istio.io/istio/pkg/util/identifier"
+	netutil "istio.io/istio/pkg/util/net"
 	"istio.io/istio/pkg/util/protomarshal"
+	"istio.io/istio/pkg/util/sets"
 	"istio.io/pkg/ledger"
 	"istio.io/pkg/monitoring"
 )
@@ -209,7 +212,7 @@ func ResourcesToAny(r Resources) []*anypb.Any {
 
 // XdsUpdates include information about the subset of updated resources.
 // See for example EDS incremental updates.
-type XdsUpdates = map[ConfigKey]struct{}
+type XdsUpdates = sets.Set[ConfigKey]
 
 // XdsLogDetails contains additional metadata that is captured by Generators and used by xds processors
 // like Ads and Delta to uniformly log.
@@ -272,6 +275,11 @@ type Proxy struct {
 	// for the purposes of network scoping.
 	// NOTE: DO NOT USE THIS FIELD TO CONSTRUCT DNS NAMES
 	ConfigNamespace string
+
+	// Labels specifies the set of workload instance (ex: k8s pod) labels associated with this node.
+	// Labels can be different from that in Metadata because of pod labels update after startup,
+	// while NodeMetadata.Labels are set during bootstrap.
+	Labels map[string]string
 
 	// Metadata key-value pairs extending the Node identifier
 	Metadata *NodeMetadata
@@ -488,9 +496,6 @@ type BootstrapNodeMetadata struct {
 	// replaces POD_NAME
 	InstanceName string `json:"NAME,omitempty"`
 
-	// WorkloadName specifies the name of the workload represented by this node.
-	WorkloadName string `json:"WORKLOAD_NAME,omitempty"`
-
 	// Owner specifies the workload owner (opaque string). Typically, this is the owning controller of
 	// of the workload instance (ex: k8s deployment for a k8s pod).
 	Owner string `json:"OWNER,omitempty"`
@@ -503,9 +508,6 @@ type BootstrapNodeMetadata struct {
 
 	// OutlierLogPath is the cluster manager outlier event log path.
 	OutlierLogPath string `json:"OUTLIER_LOG_PATH,omitempty"`
-
-	// ProvCertDir is the directory containing pre-provisioned certs.
-	ProvCert string `json:"PROV_CERT,omitempty"`
 
 	// AppContainers is the list of containers in the pod.
 	AppContainers string `json:"APP_CONTAINERS,omitempty"`
@@ -534,9 +536,14 @@ type NodeMetadata struct {
 	IstioRevision string `json:"ISTIO_REVISION,omitempty"`
 
 	// Labels specifies the set of workload instance (ex: k8s pod) labels associated with this node.
+	// It contains both StaticLabels and pod labels if any, it is a superset of StaticLabels.
+	// Note: it is not meant to be used during xds generation.
 	Labels map[string]string `json:"LABELS,omitempty"`
 
-	// Labels specifies the set of workload instance (ex: k8s pod) annotations associated with this node.
+	// StaticLabels specifies the set of labels from `ISTIO_METAJSON_LABELS`.
+	StaticLabels map[string]string `json:"STATIC_LABELS,omitempty"`
+
+	// Annotations specifies the set of workload instance (ex: k8s pod) annotations associated with this node.
 	Annotations map[string]string `json:"ANNOTATIONS,omitempty"`
 
 	// InstanceIPs is the set of IPs attached to this proxy
@@ -544,6 +551,9 @@ type NodeMetadata struct {
 
 	// Namespace is the namespace in which the workload instance is running.
 	Namespace string `json:"NAMESPACE,omitempty"`
+
+	// WorkloadName specifies the name of the workload represented by this node.
+	WorkloadName string `json:"WORKLOAD_NAME,omitempty"`
 
 	// InterceptionMode is the name of the metadata variable that carries info about
 	// traffic interception mode at the proxy
@@ -607,6 +617,9 @@ type NodeMetadata struct {
 	// This allows resolving ServiceEntries, which is especially useful for distinguishing TCP traffic
 	// This depends on DNSCapture.
 	DNSAutoAllocate StringBool `json:"DNS_AUTO_ALLOCATE,omitempty"`
+
+	// EnableHBONE, if set, will enable generation of HBONE config.
+	EnableHBONE StringBool `json:"ENABLE_HBONE,omitempty"`
 
 	// AutoRegister will enable auto registration of the connected endpoint to the service registry using the given WorkloadGroup name
 	AutoRegisterGroup string `json:"AUTO_REGISTER_GROUP,omitempty"`
@@ -811,7 +824,7 @@ func (node *Proxy) SetSidecarScope(ps *PushContext) {
 	sidecarScope := node.SidecarScope
 
 	if node.Type == SidecarProxy {
-		node.SidecarScope = ps.getSidecarScope(node, node.Metadata.Labels)
+		node.SidecarScope = ps.getSidecarScope(node, node.Labels)
 	} else {
 		// Gateways should just have a default scope with egress: */*
 		node.SidecarScope = ps.getSidecarScope(node, nil)
@@ -849,14 +862,30 @@ func (node *Proxy) SetServiceInstances(serviceDiscovery ServiceDiscovery) {
 	node.ServiceInstances = instances
 }
 
-// SetWorkloadLabels will set the node.Metadata.Labels only when it is nil.
+// SetWorkloadLabels will set the node.Labels.
+// It merges both node meta labels and workload labels and give preference to workload labels.
 func (node *Proxy) SetWorkloadLabels(env *Environment) {
-	// First get the workload labels from node meta
-	if len(node.Metadata.Labels) > 0 {
+	// If this is VM proxy, do not override labels at all, because in istio test we use pod to simulate VM.
+	if node.IsVM() {
+		node.Labels = node.Metadata.Labels
 		return
 	}
-	// Fallback to calling GetProxyWorkloadLabels
-	node.Metadata.Labels = env.GetProxyWorkloadLabels(node)
+	labels := env.GetProxyWorkloadLabels(node)
+	if labels != nil {
+		node.Labels = make(map[string]string, len(labels)+len(node.Metadata.StaticLabels))
+		// we can't just equate proxy workload labels to node meta labels as it may be customized by user
+		// with `ISTIO_METAJSON_LABELS` env (pkg/bootstrap/config.go extractAttributesMetadata).
+		// so, we fill the `ISTIO_METAJSON_LABELS` as well.
+		for k, v := range node.Metadata.StaticLabels {
+			node.Labels[k] = v
+		}
+		for k, v := range labels {
+			node.Labels[k] = v
+		}
+	} else {
+		// If could not find pod labels, fallback to use the node metadata labels.
+		node.Labels = node.Metadata.Labels
+	}
 }
 
 // DiscoverIPMode discovers the IP Versions supported by Proxy based on its IP addresses.
@@ -886,11 +915,29 @@ func (node *Proxy) IsIPv6() bool {
 	return node.ipMode == IPv6
 }
 
+// GetIPMode returns proxy's ipMode
+func (node *Proxy) GetIPMode() IPMode {
+	return node.ipMode
+}
+
 // ParseMetadata parses the opaque Metadata from an Envoy Node into string key-value pairs.
 // Any non-string values are ignored.
 func ParseMetadata(metadata *structpb.Struct) (*NodeMetadata, error) {
 	if metadata == nil {
 		return &NodeMetadata{}, nil
+	}
+
+	boostrapNodeMeta, err := ParseBootstrapNodeMetadata(metadata)
+	if err != nil {
+		return nil, err
+	}
+	return &boostrapNodeMeta.NodeMetadata, nil
+}
+
+// ParseBootstrapNodeMetadata parses the opaque Metadata from an Envoy Node into string key-value pairs.
+func ParseBootstrapNodeMetadata(metadata *structpb.Struct) (*BootstrapNodeMetadata, error) {
+	if metadata == nil {
+		return &BootstrapNodeMetadata{}, nil
 	}
 
 	b, err := protomarshal.MarshalProtoNames(metadata)
@@ -901,7 +948,7 @@ func ParseMetadata(metadata *structpb.Struct) (*NodeMetadata, error) {
 	if err := json.Unmarshal(b, meta); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal node metadata (%v): %v", string(b), err)
 	}
-	return &meta.NodeMetadata, nil
+	return meta, nil
 }
 
 // ParseServiceNodeWithMetadata parse the Envoy Node from the string generated by ServiceNode
@@ -924,7 +971,7 @@ func ParseServiceNodeWithMetadata(nodeID string, metadata *NodeMetadata) (*Proxy
 	// Get all IP Addresses from Metadata
 	if hasValidIPAddresses(metadata.InstanceIPs) {
 		out.IPAddresses = metadata.InstanceIPs
-	} else if isValidIPAddress(parts[1]) {
+	} else if netutil.IsValidIPAddress(parts[1]) {
 		// Fall back, use IP from node id, it's only for backward-compatibility, IP should come from metadata
 		out.IPAddresses = append(out.IPAddresses, parts[1])
 	}
@@ -1023,16 +1070,11 @@ func hasValidIPAddresses(ipAddresses []string) bool {
 		return false
 	}
 	for _, ipAddress := range ipAddresses {
-		if !isValidIPAddress(ipAddress) {
+		if !netutil.IsValidIPAddress(ipAddress) {
 			return false
 		}
 	}
 	return true
-}
-
-// Tell whether the given IP address is valid or not
-func isValidIPAddress(ip string) bool {
-	return net.ParseIP(ip) != nil
 }
 
 // TrafficInterceptionMode indicates how traffic to/from the workload is captured and
@@ -1101,7 +1143,7 @@ func IsPrivilegedPort(port uint32) bool {
 
 func (node *Proxy) IsVM() bool {
 	// TODO use node metadata to indicate that this is a VM intstead of the TestVMLabel
-	return node.Metadata != nil && node.Metadata.Labels[constants.TestVMLabel] != ""
+	return node.Metadata.Labels[constants.TestVMLabel] != ""
 }
 
 func (node *Proxy) IsProxylessGrpc() bool {
@@ -1112,7 +1154,21 @@ func (node *Proxy) FuzzValidate() bool {
 	if node.Metadata == nil {
 		return false
 	}
+	found := false
+	for _, t := range NodeTypes {
+		if node.Type == t {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return false
+	}
 	return len(node.IPAddresses) != 0
+}
+
+func (node *Proxy) EnableHBONE() bool {
+	return features.EnableHBONE && bool(node.Metadata.EnableHBONE)
 }
 
 type GatewayController interface {

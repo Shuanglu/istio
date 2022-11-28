@@ -21,7 +21,7 @@ import (
 	"testing"
 
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
-	v12 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	mcsapi "sigs.k8s.io/mcs-api/pkg/apis/v1alpha1"
@@ -118,11 +118,11 @@ func TestServiceUnexported(t *testing.T) {
 
 func newServiceExport() *unstructured.Unstructured {
 	se := &mcsapi.ServiceExport{
-		TypeMeta: v12.TypeMeta{
+		TypeMeta: metav1.TypeMeta{
 			Kind:       "ServiceExport",
 			APIVersion: mcs.MCSSchemeGroupVersion.String(),
 		},
-		ObjectMeta: v12.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:      serviceExportName,
 			Namespace: serviceExportNamespace,
 		},
@@ -133,8 +133,8 @@ func newServiceExport() *unstructured.Unstructured {
 func newTestServiceExportCache(t *testing.T, clusterLocalMode ClusterLocalMode, endpointMode EndpointMode) (ec *serviceExportCacheImpl) {
 	t.Helper()
 
-	istiotest.SetBoolForTest(t, &features.EnableMCSServiceDiscovery, true)
-	istiotest.SetBoolForTest(t, &features.EnableMCSClusterLocal, clusterLocalMode == alwaysClusterLocal)
+	istiotest.SetForTest(t, &features.EnableMCSServiceDiscovery, true)
+	istiotest.SetForTest(t, &features.EnableMCSClusterLocal, clusterLocalMode == alwaysClusterLocal)
 
 	c, _ := NewFakeControllerWithOptions(t, FakeControllerOptions{
 		ClusterID: testCluster,
@@ -168,7 +168,7 @@ func (ec *serviceExportCacheImpl) export(t *testing.T) {
 
 	_, err := ec.client.Dynamic().Resource(mcs.ServiceExportGVR).Namespace(serviceExportNamespace).Create(context.TODO(),
 		newServiceExport(),
-		v12.CreateOptions{})
+		metav1.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func (ec *serviceExportCacheImpl) unExport(t *testing.T) {
 	_ = ec.client.Dynamic().Resource(mcs.ServiceExportGVR).Namespace(serviceExportNamespace).Delete(
 		context.TODO(),
 		serviceExportName,
-		v12.DeleteOptions{})
+		metav1.DeleteOptions{})
 
 	// Wait for the delete to be processed by the controller.
 	retry.UntilOrFail(t, func() bool {
@@ -229,6 +229,10 @@ func (ec *serviceExportCacheImpl) getProxyServiceInstances() []*model.ServiceIns
 		IPAddresses:     []string{serviceExportPodIP},
 		Locality:        &core.Locality{Region: "r", Zone: "z"},
 		ConfigNamespace: serviceExportNamespace,
+		Labels: map[string]string{
+			"app":                      "prod-app",
+			label.SecurityTlsMode.Name: "mutual",
+		},
 		Metadata: &model.NodeMetadata{
 			ServiceAccount: "account",
 			ClusterID:      ec.Cluster(),

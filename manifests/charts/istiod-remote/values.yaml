@@ -10,6 +10,7 @@ pilot:
   rollingMaxUnavailable: 25%
   hub: ""
   tag: ""
+  variant: ""
   # Can be a full hub/image:tag
   image: pilot
   traceSampling: 1.0
@@ -18,6 +19,8 @@ pilot:
     requests:
       cpu: 500m
       memory: 2048Mi
+  # Set to `type: RuntimeDefault` to use the default profile if available.
+  seccompProfile: {}
   env: {}
   cpu:
     targetAverageUtilization: 80
@@ -33,7 +36,7 @@ pilot:
   # JWKS URIs.
   jwksResolverExtraRootCA: ""
   # This is used to set the source of configuration for
-  # the associated address in configSource, if nothing is specificed
+  # the associated address in configSource, if nothing is specified
   # the default MCP is assumed.
   configSource:
     subscribedResources: []
@@ -206,6 +209,9 @@ global:
   hub: gcr.io/istio-testing
   # Default tag for Istio images.
   tag: latest
+  # Variant of the image to use.
+  # Currently supported are: [debug, distroless]
+  variant: ""
   # Specify image pull policy if default behavior isn't desired.
   # Default behavior: latest images will be Always else IfNotPresent.
   imagePullPolicy: ""
@@ -449,3 +455,9 @@ global:
 base:
   # For istioctl usage to disable istio config crds in base
   enableIstioConfigCRDs: true
+  # If enabled, gateway-api types will be validated using the standard upstream validation logic.
+  # This is an alternative to deploying the standalone validation server the project provides.
+  # This is disabled by default, as the cluster may already have a validation server; while technically
+  # it works to have multiple redundant validations, this adds complexity and operational risks.
+  # Users should consider enabling this if they want full gateway-api validation but don't have other validation servers.
+  validateGateway: false

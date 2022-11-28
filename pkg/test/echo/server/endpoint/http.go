@@ -31,8 +31,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
+	"istio.io/istio/pkg/h2c"
 	"istio.io/istio/pkg/test/echo"
 	"istio.io/istio/pkg/test/echo/common"
 	"istio.io/istio/pkg/test/util/retry"
@@ -104,6 +104,7 @@ func (s *httpInstance) Start(onReady OnReadyFunc) error {
 				epLog.Infof("TLS connection with alpn: %v", info.SupportedProtos)
 				return nil, nil
 			},
+			MinVersion: tls.VersionTLS12,
 		}
 		// Listen on the given port and update the port if it changed from what was passed in.
 		listener, port, err = listenOnAddressTLS(s.ListenerIP, s.Port.Port, config)
@@ -160,7 +161,7 @@ func (s *httpInstance) awaitReady(onReady OnReadyFunc, address string) {
 		}
 	} else if s.Port.TLS {
 		url = fmt.Sprintf("https://%s", address)
-		client.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+		client.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} // nolint: gosec // test only code
 	} else {
 		url = fmt.Sprintf("http://%s", address)
 	}
@@ -215,7 +216,7 @@ func (h *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		epLog.Warnf("failed to get host from remote address: %s", err)
 	}
-	epLog.WithLabels("remoteAddr", remoteAddr, "method", r.Method, "url", r.URL, "host", r.Host, "headers", r.Header, "id", id).Infof("HTTP Request")
+	epLog.WithLabels("remoteAddr", remoteAddr, "method", r.Method, "url", r.URL, "host", r.Host, "headers", r.Header, "id", id).Infof("%v Request", r.Proto)
 	if h.Port == nil {
 		defer common.Metrics.HTTPRequests.With(common.PortLabel.Value("uds")).Increment()
 	} else {
@@ -273,7 +274,7 @@ func (h *httpHandler) echo(w http.ResponseWriter, r *http.Request, id uuid.UUID)
 	if _, err := w.Write(body.Bytes()); err != nil {
 		epLog.Warn(err)
 	}
-	epLog.WithLabels("code", code, "headers", w.Header(), "id", id).Infof("HTTP Response")
+	epLog.WithLabels("code", code, "headers", w.Header(), "id", id).Infof("%v Response", r.Proto)
 }
 
 func (h *httpHandler) webSocketEcho(w http.ResponseWriter, r *http.Request) {
@@ -400,6 +401,8 @@ func setResponseFromCodes(request *http.Request, response http.ResponseWriter) (
 	for _, flavor := range codes {
 		totalSlices += flavor.slices
 	}
+	// nolint: gosec
+	// Test only code
 	slice := rand.Intn(totalSlices)
 
 	// What flavor is that slice?

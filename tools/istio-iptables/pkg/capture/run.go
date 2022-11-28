@@ -17,11 +17,11 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/vishvananda/netlink"
 
 	"istio.io/istio/tools/istio-iptables/pkg/builder"
@@ -67,7 +67,7 @@ func NewIptablesConfigurator(cfg *config.Config, ext dep.Dependencies) *Iptables
 
 type NetworkRange struct {
 	IsWildcard    bool
-	IPNets        []*net.IPNet
+	CIDRs         []netip.Prefix
 	HasLoopBackIP bool
 }
 
@@ -82,7 +82,7 @@ func (cfg *IptablesConfigurator) separateV4V6(cidrList string) (NetworkRange, Ne
 	ipv6Ranges := NetworkRange{}
 	ipv4Ranges := NetworkRange{}
 	for _, ipRange := range split(cidrList) {
-		ip, ipNet, err := net.ParseCIDR(ipRange)
+		ipp, err := netip.ParsePrefix(ipRange)
 		if err != nil {
 			_, err = fmt.Fprintf(os.Stderr, "Ignoring error for bug compatibility with istio-iptables: %s\n", err.Error())
 			if err != nil {
@@ -90,14 +90,14 @@ func (cfg *IptablesConfigurator) separateV4V6(cidrList string) (NetworkRange, Ne
 			}
 			continue
 		}
-		if ip.To4() != nil {
-			ipv4Ranges.IPNets = append(ipv4Ranges.IPNets, ipNet)
-			if ip.IsLoopback() {
+		if ipp.Addr().Is4() {
+			ipv4Ranges.CIDRs = append(ipv4Ranges.CIDRs, ipp)
+			if ipp.Addr().IsLoopback() {
 				ipv4Ranges.HasLoopBackIP = true
 			}
 		} else {
-			ipv6Ranges.IPNets = append(ipv6Ranges.IPNets, ipNet)
-			if ip.IsLoopback() {
+			ipv6Ranges.CIDRs = append(ipv6Ranges.CIDRs, ipp)
+			if ipp.Addr().IsLoopback() {
 				ipv6Ranges.HasLoopBackIP = true
 			}
 		}
@@ -206,9 +206,9 @@ func (cfg *IptablesConfigurator) handleOutboundIncludeRules(
 			insert(iptableslog.KubevirtCommand,
 				constants.PREROUTING, constants.NAT, 1, "-i", internalInterface, "-j", constants.ISTIOREDIRECT)
 		}
-	} else if len(rangeInclude.IPNets) > 0 {
+	} else if len(rangeInclude.CIDRs) > 0 {
 		// User has specified a non-empty list of cidrs to be redirected to Envoy.
-		for _, cidr := range rangeInclude.IPNets {
+		for _, cidr := range rangeInclude.CIDRs {
 			for _, internalInterface := range split(cfg.cfg.KubeVirtInterfaces) {
 				insert(iptableslog.KubevirtCommand, constants.PREROUTING, constants.NAT, 1, "-i", internalInterface,
 					"-d", cidr.String(), "-j", constants.ISTIOREDIRECT)
@@ -251,55 +251,6 @@ func ignoreExists(err error) error {
 		return nil
 	}
 	return err
-}
-
-func SplitV4V6(ips []string) (ipv4 []string, ipv6 []string) {
-	for _, i := range ips {
-		parsed := net.ParseIP(i)
-		if parsed.To4() != nil {
-			ipv4 = append(ipv4, i)
-		} else {
-			ipv6 = append(ipv6, i)
-		}
-	}
-	return
-}
-
-func ConfigureRoutes(cfg *config.Config, ext dep.Dependencies) error {
-	if cfg.DryRun {
-		log.Infof("skipping configuring routes due to dry run mode")
-		return nil
-	}
-	if ext != nil && cfg.CNIMode {
-		if cfg.HostNSEnterExec {
-			command := os.Args[0]
-			return ext.Run(command, constants.CommandConfigureRoutes)
-		}
-
-		nsContainer, err := ns.GetNS(cfg.NetworkNamespace)
-		if err != nil {
-			return err
-		}
-		defer nsContainer.Close()
-
-		return nsContainer.Do(func(ns.NetNS) error {
-			if err := configureIPv6Addresses(cfg); err != nil {
-				return err
-			}
-			if err := configureTProxyRoutes(cfg); err != nil {
-				return err
-			}
-			return nil
-		})
-	}
-	// called through 'nsenter -- istio-cni configure-routes'
-	if err := configureIPv6Addresses(cfg); err != nil {
-		return err
-	}
-	if err := configureTProxyRoutes(cfg); err != nil {
-		return err
-	}
-	return nil
 }
 
 // configureIPv6Addresses sets up a new IP address on local interface. This is used as the source IP
@@ -529,10 +480,10 @@ func (cfg *IptablesConfigurator) Run() {
 	cfg.iptables.AppendVersionedRule("127.0.0.1/32", "::1/128", iptableslog.UndefinedCommand, constants.ISTIOOUTPUT, constants.NAT,
 		"-d", constants.IPVersionSpecific, "-j", constants.RETURN)
 	// Apply outbound IPv4 exclusions. Must be applied before inclusions.
-	for _, cidr := range ipv4RangesExclude.IPNets {
+	for _, cidr := range ipv4RangesExclude.CIDRs {
 		cfg.iptables.AppendRuleV4(iptableslog.UndefinedCommand, constants.ISTIOOUTPUT, constants.NAT, "-d", cidr.String(), "-j", constants.RETURN)
 	}
-	for _, cidr := range ipv6RangesExclude.IPNets {
+	for _, cidr := range ipv6RangesExclude.CIDRs {
 		cfg.iptables.AppendRuleV6(iptableslog.UndefinedCommand, constants.ISTIOOUTPUT, constants.NAT, "-d", cidr.String(), "-j", constants.RETURN)
 	}
 

@@ -23,7 +23,7 @@ import (
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	envoy_jwt "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/jwt_authn/v3"
-	http_conn "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	tls "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	"github.com/google/go-cmp/cmp"
 	"google.golang.org/protobuf/proto"
@@ -58,7 +58,7 @@ func TestJwtFilter(t *testing.T) {
 		name             string
 		in               []*config.Config
 		enableRemoteJwks bool
-		expected         *http_conn.HttpFilter
+		expected         *hcm.HttpFilter
 	}{
 		{
 			name:     "No policy",
@@ -88,9 +88,9 @@ func TestJwtFilter(t *testing.T) {
 					},
 				},
 			},
-			expected: &http_conn.HttpFilter{
+			expected: &hcm.HttpFilter{
 				Name: "envoy.filters.http.jwt_authn",
-				ConfigType: &http_conn.HttpFilter_TypedConfig{
+				ConfigType: &hcm.HttpFilter_TypedConfig{
 					TypedConfig: protoconv.MessageToAny(
 						&envoy_jwt.JwtAuthentication{
 							Rules: []*envoy_jwt.RequirementRule{
@@ -156,9 +156,9 @@ func TestJwtFilter(t *testing.T) {
 				},
 			},
 			enableRemoteJwks: true,
-			expected: &http_conn.HttpFilter{
+			expected: &hcm.HttpFilter{
 				Name: "envoy.filters.http.jwt_authn",
-				ConfigType: &http_conn.HttpFilter_TypedConfig{
+				ConfigType: &hcm.HttpFilter_TypedConfig{
 					TypedConfig: protoconv.MessageToAny(
 						&envoy_jwt.JwtAuthentication{
 							Rules: []*envoy_jwt.RequirementRule{
@@ -229,9 +229,9 @@ func TestJwtFilter(t *testing.T) {
 				},
 			},
 			enableRemoteJwks: true,
-			expected: &http_conn.HttpFilter{
+			expected: &hcm.HttpFilter{
 				Name: "envoy.filters.http.jwt_authn",
-				ConfigType: &http_conn.HttpFilter_TypedConfig{
+				ConfigType: &hcm.HttpFilter_TypedConfig{
 					TypedConfig: protoconv.MessageToAny(
 						&envoy_jwt.JwtAuthentication{
 							Rules: []*envoy_jwt.RequirementRule{
@@ -309,9 +309,9 @@ func TestJwtFilter(t *testing.T) {
 					},
 				},
 			},
-			expected: &http_conn.HttpFilter{
+			expected: &hcm.HttpFilter{
 				Name: "envoy.filters.http.jwt_authn",
-				ConfigType: &http_conn.HttpFilter_TypedConfig{
+				ConfigType: &hcm.HttpFilter_TypedConfig{
 					TypedConfig: protoconv.MessageToAny(
 						&envoy_jwt.JwtAuthentication{
 							Rules: []*envoy_jwt.RequirementRule{
@@ -432,9 +432,9 @@ func TestJwtFilter(t *testing.T) {
 					},
 				},
 			},
-			expected: &http_conn.HttpFilter{
+			expected: &hcm.HttpFilter{
 				Name: "envoy.filters.http.jwt_authn",
-				ConfigType: &http_conn.HttpFilter_TypedConfig{
+				ConfigType: &hcm.HttpFilter_TypedConfig{
 					TypedConfig: protoconv.MessageToAny(
 						&envoy_jwt.JwtAuthentication{
 							Rules: []*envoy_jwt.RequirementRule{
@@ -499,9 +499,9 @@ func TestJwtFilter(t *testing.T) {
 					},
 				},
 			},
-			expected: &http_conn.HttpFilter{
+			expected: &hcm.HttpFilter{
 				Name: "envoy.filters.http.jwt_authn",
-				ConfigType: &http_conn.HttpFilter_TypedConfig{
+				ConfigType: &hcm.HttpFilter_TypedConfig{
 					TypedConfig: protoconv.MessageToAny(
 						&envoy_jwt.JwtAuthentication{
 							Rules: []*envoy_jwt.RequirementRule{
@@ -567,9 +567,9 @@ func TestJwtFilter(t *testing.T) {
 					},
 				},
 			},
-			expected: &http_conn.HttpFilter{
+			expected: &hcm.HttpFilter{
 				Name: "envoy.filters.http.jwt_authn",
-				ConfigType: &http_conn.HttpFilter_TypedConfig{
+				ConfigType: &hcm.HttpFilter_TypedConfig{
 					TypedConfig: protoconv.MessageToAny(
 						&envoy_jwt.JwtAuthentication{
 							Rules: []*envoy_jwt.RequirementRule{
@@ -636,9 +636,9 @@ func TestJwtFilter(t *testing.T) {
 					},
 				},
 			},
-			expected: &http_conn.HttpFilter{
+			expected: &hcm.HttpFilter{
 				Name: "envoy.filters.http.jwt_authn",
-				ConfigType: &http_conn.HttpFilter_TypedConfig{
+				ConfigType: &hcm.HttpFilter_TypedConfig{
 					TypedConfig: protoconv.MessageToAny(
 						&envoy_jwt.JwtAuthentication{
 							Rules: []*envoy_jwt.RequirementRule{
@@ -690,6 +690,82 @@ func TestJwtFilter(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "Output claim to header",
+			in: []*config.Config{
+				{
+					Spec: &v1beta1.RequestAuthentication{
+						JwtRules: []*v1beta1.JWTRule{
+							{
+								Issuer:               "https://secret.foo.com",
+								JwksUri:              jwksURI,
+								ForwardOriginalToken: true,
+								OutputClaimToHeaders: []*v1beta1.ClaimToHeader{
+									{Header: "x-jwt-key1", Claim: "value1"},
+									{Header: "x-jwt-key2", Claim: "value2"},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: &hcm.HttpFilter{
+				Name: "envoy.filters.http.jwt_authn",
+				ConfigType: &hcm.HttpFilter_TypedConfig{
+					TypedConfig: protoconv.MessageToAny(
+						&envoy_jwt.JwtAuthentication{
+							Rules: []*envoy_jwt.RequirementRule{
+								{
+									Match: &route.RouteMatch{
+										PathSpecifier: &route.RouteMatch_Prefix{
+											Prefix: "/",
+										},
+									},
+									RequirementType: &envoy_jwt.RequirementRule_Requires{
+										Requires: &envoy_jwt.JwtRequirement{
+											RequiresType: &envoy_jwt.JwtRequirement_RequiresAny{
+												RequiresAny: &envoy_jwt.JwtRequirementOrList{
+													Requirements: []*envoy_jwt.JwtRequirement{
+														{
+															RequiresType: &envoy_jwt.JwtRequirement_ProviderName{
+																ProviderName: "origins-0",
+															},
+														},
+														{
+															RequiresType: &envoy_jwt.JwtRequirement_AllowMissing{
+																AllowMissing: &emptypb.Empty{},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+							Providers: map[string]*envoy_jwt.JwtProvider{
+								"origins-0": {
+									Issuer: "https://secret.foo.com",
+									JwksSourceSpecifier: &envoy_jwt.JwtProvider_LocalJwks{
+										LocalJwks: &core.DataSource{
+											Specifier: &core.DataSource_InlineString{
+												InlineString: test.JwtPubKey1,
+											},
+										},
+									},
+									Forward: true,
+									ClaimToHeaders: []*envoy_jwt.JwtClaimToHeader{
+										{HeaderName: "x-jwt-key1", ClaimName: "value1"},
+										{HeaderName: "x-jwt-key2", ClaimName: "value2"},
+									},
+									PayloadInMetadata: "https://secret.foo.com",
+								},
+							},
+							BypassCorsPreflight: true,
+						}),
+				},
+			},
+		},
 	}
 
 	push := model.NewPushContext()
@@ -704,7 +780,7 @@ func TestJwtFilter(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			istiotest.SetBoolForTest(t, &features.EnableRemoteJwks, c.enableRemoteJwks)
+			istiotest.SetForTest(t, &features.EnableRemoteJwks, c.enableRemoteJwks)
 			if got := NewPolicyApplier("root-namespace", c.in, nil, push).JwtFilter(); !reflect.DeepEqual(c.expected, got) {
 				t.Errorf("got:\n%s\nwanted:\n%s", spew.Sdump(got), spew.Sdump(c.expected))
 			}
@@ -1026,7 +1102,7 @@ func TestConvertToEnvoyJwtConfig(t *testing.T) {
 	}
 }
 
-func humanReadableAuthnFilterDump(filter *http_conn.HttpFilter) string {
+func humanReadableAuthnFilterDump(filter *hcm.HttpFilter) string {
 	if filter == nil {
 		return "<nil>"
 	}
@@ -1047,7 +1123,7 @@ func TestAuthnFilterConfig(t *testing.T) {
 		forSidecar bool
 		jwtIn      []*config.Config
 		peerIn     []*config.Config
-		expected   *http_conn.HttpFilter
+		expected   *hcm.HttpFilter
 	}{
 		{
 			name:     "no-policy",
@@ -1067,9 +1143,9 @@ func TestAuthnFilterConfig(t *testing.T) {
 					},
 				},
 			},
-			expected: &http_conn.HttpFilter{
+			expected: &hcm.HttpFilter{
 				Name: "istio_authn",
-				ConfigType: &http_conn.HttpFilter_TypedConfig{
+				ConfigType: &hcm.HttpFilter_TypedConfig{
 					TypedConfig: protoconv.MessageToAny(&authn_filter.FilterConfig{
 						SkipValidateTrustDomain: true,
 						Policy: &authn_alpha.Policy{
@@ -1102,9 +1178,9 @@ func TestAuthnFilterConfig(t *testing.T) {
 					},
 				},
 			},
-			expected: &http_conn.HttpFilter{
+			expected: &hcm.HttpFilter{
 				Name: "istio_authn",
-				ConfigType: &http_conn.HttpFilter_TypedConfig{
+				ConfigType: &hcm.HttpFilter_TypedConfig{
 					TypedConfig: protoconv.MessageToAny(&authn_filter.FilterConfig{
 						SkipValidateTrustDomain: true,
 						DisableClearRouteCache:  true,
@@ -1150,9 +1226,9 @@ func TestAuthnFilterConfig(t *testing.T) {
 					},
 				},
 			},
-			expected: &http_conn.HttpFilter{
+			expected: &hcm.HttpFilter{
 				Name: "istio_authn",
-				ConfigType: &http_conn.HttpFilter_TypedConfig{
+				ConfigType: &hcm.HttpFilter_TypedConfig{
 					TypedConfig: protoconv.MessageToAny(&authn_filter.FilterConfig{
 						SkipValidateTrustDomain: true,
 						Policy: &authn_alpha.Policy{
@@ -1202,9 +1278,9 @@ func TestAuthnFilterConfig(t *testing.T) {
 					},
 				},
 			},
-			expected: &http_conn.HttpFilter{
+			expected: &hcm.HttpFilter{
 				Name: "istio_authn",
-				ConfigType: &http_conn.HttpFilter_TypedConfig{
+				ConfigType: &hcm.HttpFilter_TypedConfig{
 					TypedConfig: protoconv.MessageToAny(&authn_filter.FilterConfig{
 						SkipValidateTrustDomain: true,
 						Policy: &authn_alpha.Policy{
@@ -1536,11 +1612,10 @@ func TestInboundMTLSSettings(t *testing.T) {
 	}
 
 	testNode := &model.Proxy{
-		Metadata: &model.NodeMetadata{
-			Labels: map[string]string{
-				"app": "foo",
-			},
+		Labels: map[string]string{
+			"app": "foo",
 		},
+		Metadata: &model.NodeMetadata{},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1548,6 +1623,7 @@ func TestInboundMTLSSettings(t *testing.T) {
 				8080,
 				testNode,
 				[]string{},
+				authn.NoOverride,
 			)
 			if diff := cmp.Diff(tc.expected, got, protocmp.Transform()); diff != "" {
 				t.Errorf("unexpected filter chains: %v", diff)

@@ -87,6 +87,7 @@ func TestValidation(t *testing.T) {
 			for _, cluster := range t.Clusters().Configs() {
 				for i := range dataset {
 					d := dataset[i]
+
 					t.NewSubTest(string(d)).RunParallel(func(t framework.TestContext) {
 						if d.isSkipped() {
 							t.SkipNow()
@@ -159,27 +160,25 @@ func TestEnsureNoMissingCRDs(t *testing.T) {
 	framework.NewTest(t).
 		Run(func(t framework.TestContext) {
 			ignored := sets.New(ignoredCRDs...)
-			recognized := sets.New()
+			recognized := sets.New[string]()
 
 			// TODO(jasonwzm) remove this after multi-version APIs are supported.
 			for _, r := range collections.Pilot.All() {
 				s := strings.Join([]string{r.Resource().Group(), r.Resource().Version(), r.Resource().Kind()}, "/")
 				recognized.Insert(s)
-			}
-			for _, gvk := range []string{
-				"networking.istio.io/v1beta1/Gateway",
-				"networking.istio.io/v1beta1/DestinationRule",
-				"networking.istio.io/v1beta1/VirtualService",
-				"networking.istio.io/v1beta1/WorkloadEntry",
-				"networking.istio.io/v1beta1/Sidecar",
-			} {
-				recognized.Insert(gvk)
+				for _, alias := range r.Resource().GroupVersionAliasKinds() {
+					s = strings.Join([]string{alias.Group, alias.Version, alias.Kind}, "/")
+					recognized.Insert(s)
+				}
 			}
 			// These CRDs are validated outside of Istio
 			for _, gvk := range []string{
 				"gateway.networking.k8s.io/v1alpha2/Gateway",
+				"gateway.networking.k8s.io/v1beta1/Gateway",
 				"gateway.networking.k8s.io/v1alpha2/GatewayClass",
+				"gateway.networking.k8s.io/v1beta1/GatewayClass",
 				"gateway.networking.k8s.io/v1alpha2/HTTPRoute",
+				"gateway.networking.k8s.io/v1beta1/HTTPRoute",
 				"gateway.networking.k8s.io/v1alpha2/TCPRoute",
 				"gateway.networking.k8s.io/v1alpha2/TLSRoute",
 				"gateway.networking.k8s.io/v1alpha2/ReferencePolicy",
@@ -187,8 +186,8 @@ func TestEnsureNoMissingCRDs(t *testing.T) {
 				recognized.Delete(gvk)
 			}
 
-			testedValid := sets.New()
-			testedInvalid := sets.New()
+			testedValid := sets.New[string]()
+			testedInvalid := sets.New[string]()
 			for _, te := range loadTestData(t) {
 				yamlBatch, err := te.load()
 				yamlParts := yml.SplitString(yamlBatch)

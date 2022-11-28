@@ -19,7 +19,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
+	"net/netip"
 	"os"
 	"path"
 	"path/filepath"
@@ -27,9 +27,9 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-multierror"
-	kubeApiCore "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	kubeApiMeta "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/yaml"
 
@@ -94,10 +94,11 @@ type iopInfo struct {
 }
 
 type iopFiles struct {
-	primaryIOP iopInfo
-	configIOP  iopInfo
-	remoteIOP  iopInfo
-	gatewayIOP iopInfo
+	primaryIOP  iopInfo
+	configIOP   iopInfo
+	remoteIOP   iopInfo
+	gatewayIOP  iopInfo
+	eastwestIOP iopInfo
 }
 
 // ID implements resource.Instance
@@ -152,8 +153,8 @@ func (i *istioImpl) CustomIngressFor(c cluster.Cluster, service types.Namespaced
 	return i.ingress[c.Name()][labelSelector]
 }
 
-func (i *istioImpl) RemoteDiscoveryAddressFor(cluster cluster.Cluster) (net.TCPAddr, error) {
-	var addr net.TCPAddr
+func (i *istioImpl) RemoteDiscoveryAddressFor(cluster cluster.Cluster) (netip.AddrPort, error) {
+	var addr netip.AddrPort
 	primary := cluster.Primary()
 	if !primary.IsConfig() {
 		// istiod is exposed via LoadBalancer since we won't have ingress outside of a cluster;a cluster that is;
@@ -163,15 +164,15 @@ func (i *istioImpl) RemoteDiscoveryAddressFor(cluster cluster.Cluster) (net.TCPA
 				istiodSvcName, discoveryPort)
 		}, getAddressTimeout, getAddressDelay)
 		if err != nil {
-			return net.TCPAddr{}, err
+			return netip.AddrPort{}, err
 		}
-		addr = address.(net.TCPAddr)
+		addr = address.(netip.AddrPort)
 	} else {
 		name := types.NamespacedName{Name: eastWestIngressServiceName, Namespace: i.cfg.SystemNamespace}
 		addr = i.CustomIngressFor(primary, name, eastWestIngressIstioLabel).DiscoveryAddress()
 	}
-	if addr.IP.String() == "<nil>" {
-		return net.TCPAddr{}, fmt.Errorf("failed to get ingress IP for %s", primary.Name())
+	if !addr.IsValid() {
+		return netip.AddrPort{}, fmt.Errorf("failed to get ingress IP for %s", primary.Name())
 	}
 	return addr, nil
 }
@@ -332,7 +333,7 @@ func newKube(ctx resource.Context, cfg Config) (Instance, error) {
 			if c.IsConfig() {
 				spec = i.configIOP.spec
 			}
-			if err := i.deployEastWestGateway(c, spec.Revision); err != nil {
+			if err := i.deployEastWestGateway(c, spec.Revision, i.eastwestIOP.file); err != nil {
 				return i, err
 			}
 
@@ -422,7 +423,7 @@ func (i *istioImpl) installControlPlaneCluster(c cluster.Cluster) error {
 			return nil
 		}
 
-		if err := i.deployEastWestGateway(c, i.primaryIOP.spec.Revision); err != nil {
+		if err := i.deployEastWestGateway(c, i.primaryIOP.spec.Revision, i.eastwestIOP.file); err != nil {
 			return err
 		}
 		// Other clusters should only use this for discovery if its a config cluster.
@@ -482,7 +483,7 @@ func (i *istioImpl) installRemoteCommon(c cluster.Cluster, defaultsIOPFile, iopF
 		if err != nil {
 			return err
 		}
-		args.AppendSet("values.global.remotePilotAddress", remoteIstiodAddress.IP.String())
+		args.AppendSet("values.global.remotePilotAddress", remoteIstiodAddress.Addr().String())
 	}
 
 	if i.externalControlPlane || i.cfg.IstiodlessRemotes {
@@ -582,7 +583,7 @@ func waitForIstioReady(ctx resource.Context, c cluster.Cluster, cfg Config) erro
 	return nil
 }
 
-// configureDirectAPIServiceAccessBetweenClusters - create a remote secret of cluster `c`` and place
+// configureDirectAPIServiceAccessBetweenClusters - create a remote secret of cluster `c` and place
 // the secret in all `from` clusters
 func (i *istioImpl) configureDirectAPIServiceAccessBetweenClusters(c cluster.Cluster, from ...cluster.Cluster) error {
 	// Create a secret.
@@ -710,21 +711,21 @@ func (i *istioImpl) deployCACerts() error {
 				// ^^^ Use config cluster name because external control plane uses config cluster as its cluster ID
 			}
 		}
-		if _, err := c.Kube().CoreV1().Namespaces().Create(context.TODO(), &kubeApiCore.Namespace{
-			ObjectMeta: kubeApiMeta.ObjectMeta{
+		if _, err := c.Kube().CoreV1().Namespaces().Create(context.TODO(), &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
 				Labels:      nsLabels,
 				Annotations: nsAnnotations,
 				Name:        i.cfg.SystemNamespace,
 			},
-		}, kubeApiMeta.CreateOptions{}); err != nil {
+		}, metav1.CreateOptions{}); err != nil {
 			if errors.IsAlreadyExists(err) {
-				if _, err := c.Kube().CoreV1().Namespaces().Update(context.TODO(), &kubeApiCore.Namespace{
-					ObjectMeta: kubeApiMeta.ObjectMeta{
+				if _, err := c.Kube().CoreV1().Namespaces().Update(context.TODO(), &corev1.Namespace{
+					ObjectMeta: metav1.ObjectMeta{
 						Labels:      nsLabels,
 						Annotations: nsAnnotations,
 						Name:        i.cfg.SystemNamespace,
 					},
-				}, kubeApiMeta.UpdateOptions{}); err != nil {
+				}, metav1.UpdateOptions{}); err != nil {
 					scopes.Framework.Errorf("failed updating namespace %s on cluster %s. This can happen when deploying "+
 						"multiple control planes. Error: %v", i.cfg.SystemNamespace, c.Name(), err)
 				}
@@ -736,7 +737,7 @@ func (i *istioImpl) deployCACerts() error {
 
 		// Create the secret for the cacerts.
 		if _, err := c.Kube().CoreV1().Secrets(i.cfg.SystemNamespace).Create(context.TODO(), secret,
-			kubeApiMeta.CreateOptions{}); err != nil {
+			metav1.CreateOptions{}); err != nil {
 			// no need to do anything if cacerts is already present
 			if !errors.IsAlreadyExists(err) {
 				scopes.Framework.Errorf("failed to create CA secrets on cluster %s. This can happen when deploying "+
@@ -761,34 +762,34 @@ func (i *istioImpl) configureRemoteConfigForControlPlane(c cluster.Cluster) erro
 	scopes.Framework.Infof("configuring external control plane in %s to use config cluster %s", c.Name(), configCluster.Name())
 	// ensure system namespace exists
 	if _, err = c.Kube().CoreV1().Namespaces().
-		Create(context.TODO(), &kubeApiCore.Namespace{
-			ObjectMeta: kubeApiMeta.ObjectMeta{
+		Create(context.TODO(), &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
 				Name: i.cfg.SystemNamespace,
 			},
-		}, kubeApiMeta.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
+		}, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
 		return err
 	}
 	// create kubeconfig secret
 	if _, err = c.Kube().CoreV1().Secrets(i.cfg.SystemNamespace).
-		Create(context.TODO(), &kubeApiCore.Secret{
-			ObjectMeta: kubeApiMeta.ObjectMeta{
+		Create(context.TODO(), &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
 				Name:      "istio-kubeconfig",
 				Namespace: i.cfg.SystemNamespace,
 			},
 			Data: map[string][]byte{
 				"config": []byte(istioKubeConfig),
 			},
-		}, kubeApiMeta.CreateOptions{}); err != nil {
+		}, metav1.CreateOptions{}); err != nil {
 		if errors.IsAlreadyExists(err) { // Allow easier running locally when we run multiple tests in a row
-			if _, err := c.Kube().CoreV1().Secrets(i.cfg.SystemNamespace).Update(context.TODO(), &kubeApiCore.Secret{
-				ObjectMeta: kubeApiMeta.ObjectMeta{
+			if _, err := c.Kube().CoreV1().Secrets(i.cfg.SystemNamespace).Update(context.TODO(), &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
 					Name:      "istio-kubeconfig",
 					Namespace: i.cfg.SystemNamespace,
 				},
 				Data: map[string][]byte{
 					"config": []byte(istioKubeConfig),
 				},
-			}, kubeApiMeta.UpdateOptions{}); err != nil {
+			}, metav1.UpdateOptions{}); err != nil {
 				scopes.Framework.Infof("error updating istio-kubeconfig secret: %v", err)
 				return err
 			}
@@ -830,6 +831,14 @@ func genCommonOperatorFiles(ctx resource.Context, cfg Config, workDir string) (i
 			return iopFiles{}, err
 		}
 	}
+	if cfg.EastWestGatewayValues != "" {
+		i.eastwestIOP.file = filepath.Join(workDir, "eastwest.yaml")
+		_, err = initIOPFile(ctx, cfg, i.eastwestIOP.file, cfg.EastWestGatewayValues)
+		if err != nil {
+			return iopFiles{}, err
+		}
+	}
+
 	return
 }
 

@@ -24,17 +24,17 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	netutil "istio.io/istio/pkg/util/net"
 	"istio.io/istio/tools/istio-clean-iptables/pkg/config"
-	common "istio.io/istio/tools/istio-iptables/pkg/capture"
 	"istio.io/istio/tools/istio-iptables/pkg/constants"
 	"istio.io/pkg/env"
 	"istio.io/pkg/log"
 )
 
 var (
-	envoyUserVar = env.RegisterStringVar(constants.EnvoyUser, "istio-proxy", "Envoy proxy username")
+	envoyUserVar = env.Register(constants.EnvoyUser, "istio-proxy", "Envoy proxy username")
 	// Enable interception of DNS.
-	dnsCaptureByAgent = env.RegisterBoolVar("ISTIO_META_DNS_CAPTURE", false,
+	dnsCaptureByAgent = env.Register("ISTIO_META_DNS_CAPTURE", false,
 		"If set to true, enable the capture of outgoing DNS packets on port 53, redirecting to istio-agent on :15053").Get()
 )
 
@@ -57,13 +57,15 @@ var rootCmd = &cobra.Command{
 
 func constructConfig() *config.Config {
 	cfg := &config.Config{
-		DryRun:             viper.GetBool(constants.DryRun),
-		ProxyUID:           viper.GetString(constants.ProxyUID),
-		ProxyGID:           viper.GetString(constants.ProxyGID),
-		RedirectDNS:        viper.GetBool(constants.RedirectDNS),
-		CaptureAllDNS:      viper.GetBool(constants.CaptureAllDNS),
-		OwnerGroupsInclude: viper.GetString(constants.OwnerGroupsInclude.Name),
-		OwnerGroupsExclude: viper.GetString(constants.OwnerGroupsExclude.Name),
+		DryRun:                  viper.GetBool(constants.DryRun),
+		ProxyUID:                viper.GetString(constants.ProxyUID),
+		ProxyGID:                viper.GetString(constants.ProxyGID),
+		RedirectDNS:             viper.GetBool(constants.RedirectDNS),
+		CaptureAllDNS:           viper.GetBool(constants.CaptureAllDNS),
+		OwnerGroupsInclude:      viper.GetString(constants.OwnerGroupsInclude.Name),
+		OwnerGroupsExclude:      viper.GetString(constants.OwnerGroupsExclude.Name),
+		InboundInterceptionMode: viper.GetString(constants.IstioInboundInterceptionMode.Name),
+		InboundTProxyMark:       viper.GetString(constants.IstioInboundTproxyMark.Name),
 	}
 
 	// TODO: Make this more configurable, maybe with an allowlist of users to be captured for output instead of a denylist.
@@ -90,7 +92,7 @@ func constructConfig() *config.Config {
 		if err != nil {
 			panic(fmt.Sprintf("failed to load /etc/resolv.conf: %v", err))
 		}
-		cfg.DNSServersV4, cfg.DNSServersV6 = common.SplitV4V6(dnsConfig.Servers)
+		cfg.DNSServersV4, cfg.DNSServersV6 = netutil.IPsSplitV4V6(dnsConfig.Servers)
 	}
 
 	return cfg
@@ -133,6 +135,16 @@ func bindFlags(cmd *cobra.Command, args []string) {
 		handleError(err)
 	}
 	viper.SetDefault(constants.OwnerGroupsExclude.Name, constants.OwnerGroupsExclude.DefaultValue)
+
+	if err := viper.BindEnv(constants.IstioInboundInterceptionMode.Name); err != nil {
+		handleError(err)
+	}
+	viper.SetDefault(constants.IstioInboundInterceptionMode.Name, constants.IstioInboundInterceptionMode.DefaultValue)
+
+	if err := viper.BindEnv(constants.IstioInboundTproxyMark.Name); err != nil {
+		handleError(err)
+	}
+	viper.SetDefault(constants.IstioInboundTproxyMark.Name, constants.IstioInboundTproxyMark.DefaultValue)
 }
 
 // https://github.com/spf13/viper/issues/233.
@@ -148,6 +160,11 @@ func init() {
 		"Specify the GID of the user for which the redirection is not applied. (same default value as -u param)")
 
 	rootCmd.Flags().Bool(constants.RedirectDNS, dnsCaptureByAgent, "Enable capture of dns traffic by istio-agent")
+
+	rootCmd.Flags().StringP(constants.InboundInterceptionMode, "m", "",
+		"The mode used to redirect inbound connections to Envoy, either \"REDIRECT\" or \"TPROXY\"")
+
+	rootCmd.Flags().StringP(constants.InboundTProxyMark, "t", "", "")
 }
 
 func GetCommand() *cobra.Command {

@@ -20,8 +20,10 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -72,9 +74,11 @@ func NewImageFetcher(ctx context.Context, opt ImageFetcherOption) *ImageFetcher 
 	}
 
 	if opt.Insecure {
-		t := remote.DefaultTransport.Clone()
+		t := remote.DefaultTransport.(*http.Transport).Clone()
+		// nolint: gosec
+		// This is only when a user explicitly sets a flag to enable insecure mode
 		t.TLSClientConfig = &tls.Config{
-			InsecureSkipVerify: opt.Insecure, //nolint: gosec
+			InsecureSkipVerify: opt.Insecure,
 		}
 		fetchOpts = append(fetchOpts, remote.WithTransport(t))
 	}
@@ -171,12 +175,12 @@ func extractDockerImage(img v1.Image) ([]byte, error) {
 		return nil, fmt.Errorf("could not fetch layers: %v", err)
 	}
 
-	// The image must be single-layered.
-	if len(layers) != 1 {
-		return nil, fmt.Errorf("number of layers must be 1 but got %d", len(layers))
+	// The image must have at least one layer.
+	if len(layers) == 0 {
+		return nil, errors.New("number of layers must be greater than zero")
 	}
 
-	layer := layers[0]
+	layer := layers[len(layers)-1]
 	mt, err := layer.MediaType()
 	if err != nil {
 		return nil, fmt.Errorf("could not get media type: %v", err)
@@ -209,12 +213,12 @@ func extractOCIStandardImage(img v1.Image) ([]byte, error) {
 		return nil, fmt.Errorf("could not fetch layers: %v", err)
 	}
 
-	// The image must be single-layered.
-	if len(layers) != 1 {
-		return nil, fmt.Errorf("number of layers must be 1 but got %d", len(layers))
+	// The image must have at least one layer.
+	if len(layers) == 0 {
+		return nil, fmt.Errorf("number of layers must be greater than zero")
 	}
 
-	layer := layers[0]
+	layer := layers[len(layers)-1]
 	mt, err := layer.MediaType()
 	if err != nil {
 		return nil, fmt.Errorf("could not get media type: %v", err)
@@ -251,7 +255,9 @@ func extractWasmPluginBinary(r io.Reader) ([]byte, error) {
 	const wasmPluginFileName = "plugin.wasm"
 
 	// Search for the file walking through the archive.
-	tr := tar.NewReader(gr)
+
+	// Limit wasm binary to 256mb; in reality it must be much smaller
+	tr := tar.NewReader(io.LimitReader(gr, 1024*1024*256))
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {

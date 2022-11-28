@@ -41,7 +41,7 @@ const hubIDPPrefix = "https://gkehub.googleapis.com/"
 
 var (
 	googleCAClientLog = log.RegisterScope("googleca", "Google CA client debugging", 0)
-	envGkeClusterURL  = env.RegisterStringVar("GKE_CLUSTER_URL", "", "The url of GKE cluster").Get()
+	envGkeClusterURL  = env.Register("GKE_CLUSTER_URL", "", "The url of GKE cluster").Get()
 )
 
 type googleCAClient struct {
@@ -121,7 +121,10 @@ func (cl *googleCAClient) CSRSign(csrPEM []byte, certValidTTLInSec int64) ([]str
 
 func (cl *googleCAClient) Close() {
 	if cl.conn != nil {
-		cl.conn.Close()
+		err := cl.conn.Close()
+		if err != nil {
+			googleCAClientLog.Infof("CAClient Connection is not closed: %v", err)
+		}
 	}
 }
 

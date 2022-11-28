@@ -22,7 +22,7 @@ import (
 	"os"
 	"strings"
 
-	admit_v1 "k8s.io/api/admissionregistration/v1"
+	admitv1 "k8s.io/api/admissionregistration/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
@@ -74,7 +74,7 @@ type GenerateOptions struct {
 }
 
 // Generate generates the manifests for a revision tag pointed the given revision.
-func Generate(ctx context.Context, client kube.ExtendedClient, opts *GenerateOptions, istioNS string) (string, error) {
+func Generate(ctx context.Context, client kube.CLIClient, opts *GenerateOptions, istioNS string) (string, error) {
 	// abort if there exists a revision with the target tag name
 	revWebhookCollisions, err := GetWebhooksWithRevision(ctx, client.Kube(), opts.Tag)
 	if err != nil {
@@ -157,7 +157,7 @@ func fixWhConfig(whConfig *tagWebhookConfig) *tagWebhookConfig {
 }
 
 // Create applies the given tag manifests.
-func Create(client kube.ExtendedClient, manifests string) error {
+func Create(client kube.CLIClient, manifests string) error {
 	if err := applyYAML(client, manifests, "istio-system"); err != nil {
 		return fmt.Errorf("failed to apply tag manifests to cluster: %v", err)
 	}
@@ -197,11 +197,11 @@ base:
 			Strict: true,
 		})
 
-	whObject, _, err := deserializer.Decode([]byte(validatingWebhookYAML), nil, &admit_v1.ValidatingWebhookConfiguration{})
+	whObject, _, err := deserializer.Decode([]byte(validatingWebhookYAML), nil, &admitv1.ValidatingWebhookConfiguration{})
 	if err != nil {
 		return "", fmt.Errorf("could not decode generated webhook: %w", err)
 	}
-	decodedWh := whObject.(*admit_v1.ValidatingWebhookConfiguration)
+	decodedWh := whObject.(*admitv1.ValidatingWebhookConfiguration)
 	for i := range decodedWh.Webhooks {
 		decodedWh.Webhooks[i].ClientConfig.CABundle = []byte(config.CABundle)
 	}
@@ -254,11 +254,11 @@ istiodRemote:
 			Strict: true,
 		})
 
-	whObject, _, err := deserializer.Decode([]byte(tagWebhookYaml), nil, &admit_v1.MutatingWebhookConfiguration{})
+	whObject, _, err := deserializer.Decode([]byte(tagWebhookYaml), nil, &admitv1.MutatingWebhookConfiguration{})
 	if err != nil {
 		return "", fmt.Errorf("could not decode generated webhook: %w", err)
 	}
-	decodedWh := whObject.(*admit_v1.MutatingWebhookConfiguration)
+	decodedWh := whObject.(*admitv1.MutatingWebhookConfiguration)
 	for i := range decodedWh.Webhooks {
 		decodedWh.Webhooks[i].ClientConfig.CABundle = []byte(config.CABundle)
 		if decodedWh.Webhooks[i].ClientConfig.Service != nil {
@@ -278,7 +278,7 @@ istiodRemote:
 }
 
 // tagWebhookConfigFromCanonicalWebhook parses configuration needed to create tag webhook from existing revision webhook.
-func tagWebhookConfigFromCanonicalWebhook(wh admit_v1.MutatingWebhookConfiguration, tagName, istioNS string) (*tagWebhookConfig, error) {
+func tagWebhookConfigFromCanonicalWebhook(wh admitv1.MutatingWebhookConfiguration, tagName, istioNS string) (*tagWebhookConfig, error) {
 	rev, err := GetWebhookRevision(wh)
 	if err != nil {
 		return nil, err
@@ -320,7 +320,7 @@ func tagWebhookConfigFromCanonicalWebhook(wh admit_v1.MutatingWebhookConfigurati
 }
 
 // applyYAML taken from remote_secret.go
-func applyYAML(client kube.ExtendedClient, yamlContent, ns string) error {
+func applyYAML(client kube.CLIClient, yamlContent, ns string) error {
 	yamlFile, err := writeToTempFile(yamlContent)
 	if err != nil {
 		return fmt.Errorf("failed creating manifest file: %w", err)

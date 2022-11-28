@@ -77,8 +77,8 @@ func verifyControllers(t *testing.T, m *Multicluster, expectedControllerCount in
 	}, retry.Message(timeoutName), retry.Delay(time.Millisecond*10), retry.Timeout(time.Second*5))
 }
 
-func initController(client kube.ExtendedClient, ns string, stop <-chan struct{}, mc *Multicluster) {
-	sc := multicluster.NewController(client, ns, "cluster-1")
+func initController(client kube.CLIClient, ns string, stop <-chan struct{}, mc *Multicluster) {
+	sc := multicluster.NewController(client, ns, "cluster-1", mesh.NewFixedWatcher(nil))
 	sc.AddHandler(mc)
 	_ = sc.Run(stop)
 	kube.WaitForCacheSync(stop, sc.HasSynced)
@@ -132,8 +132,8 @@ func Test_KubeSecretController(t *testing.T) {
 }
 
 func Test_KubeSecretController_ExternalIstiod_MultipleClusters(t *testing.T) {
-	test.SetBoolForTest(t, &features.ExternalIstiod, true)
-	test.SetStringForTest(t, &features.InjectionWebhookConfigName, "")
+	test.SetForTest(t, &features.ExternalIstiod, true)
+	test.SetForTest(t, &features.InjectionWebhookConfigName, "")
 	clientset := kube.NewFakeClient()
 	multicluster.BuildClientsFromConfig = func(kubeConfig []byte) (kube.Client, error) {
 		return kube.NewFakeClient(), nil

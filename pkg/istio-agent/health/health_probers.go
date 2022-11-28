@@ -68,6 +68,8 @@ func NewHTTPProber(cfg *v1alpha3.HTTPHealthCheckConfig, ipv6 bool) *HTTPProber {
 	// Create an http.Transport with TLSClientConfig for HTTPProber if the scheme is https,
 	// otherwise set up an empty one.
 	if cfg.Scheme == string(scheme.HTTPS) {
+		// nolint: gosec
+		// This is matching Kubernetes. It is a reasonable usage of this, as it is just a health check over localhost.
 		h.Transport = &http.Transport{
 			DisableKeepAlives: true,
 			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
@@ -88,7 +90,7 @@ func NewHTTPProber(cfg *v1alpha3.HTTPHealthCheckConfig, ipv6 bool) *HTTPProber {
 }
 
 // HttpProber_Probe will return whether or not the target is healthy (true -> healthy)
-// 	by making an HTTP Get response.
+// by making an HTTP Get response.
 func (h *HTTPProber) Probe(timeout time.Duration) (ProbeResult, error) {
 	client := &http.Client{
 		Timeout:   timeout,

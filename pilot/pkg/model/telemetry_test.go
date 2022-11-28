@@ -15,16 +15,22 @@
 package model
 
 import (
+	"strings"
 	"testing"
+	"time"
 
+	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
+	fileaccesslog "github.com/envoyproxy/go-control-plane/envoy/extensions/access_loggers/file/v3"
 	httpwasm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/wasm/v3"
-	httppb "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	wasmfilter "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/wasm/v3"
 	"github.com/google/go-cmp/cmp"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
 	wrappers "google.golang.org/protobuf/types/known/wrapperspb"
 
+	"istio.io/api/envoy/extensions/stats"
 	meshconfig "istio.io/api/mesh/v1alpha1"
 	tpb "istio.io/api/telemetry/v1alpha1"
 	"istio.io/istio/pilot/pkg/networking"
@@ -33,6 +39,34 @@ import (
 	"istio.io/istio/pkg/config/schema/collection"
 	"istio.io/istio/pkg/config/schema/collections"
 	"istio.io/istio/pkg/test/util/assert"
+	"istio.io/istio/pkg/util/protomarshal"
+)
+
+var (
+	jsonTextProvider = &meshconfig.MeshConfig_ExtensionProvider{
+		Name: "envoy-json",
+		Provider: &meshconfig.MeshConfig_ExtensionProvider_EnvoyFileAccessLog{
+			EnvoyFileAccessLog: &meshconfig.MeshConfig_ExtensionProvider_EnvoyFileAccessLogProvider{
+				Path: "/dev/stdout",
+				LogFormat: &meshconfig.MeshConfig_ExtensionProvider_EnvoyFileAccessLogProvider_LogFormat{
+					LogFormat: &meshconfig.MeshConfig_ExtensionProvider_EnvoyFileAccessLogProvider_LogFormat_Labels{
+						Labels: &structpb.Struct{},
+					},
+				},
+			},
+		},
+	}
+
+	defaultJSONLabelsOut = &fileaccesslog.FileAccessLog{
+		Path: "/dev/stdout",
+		AccessLogFormat: &fileaccesslog.FileAccessLog_LogFormat{
+			LogFormat: &core.SubstitutionFormatString{
+				Format: &core.SubstitutionFormatString_JsonFormat{
+					JsonFormat: EnvoyJSONLogFormatIstio,
+				},
+			},
+		},
+	}
 )
 
 func createTestTelemetries(configs []config.Config, t *testing.T) (*Telemetries, *PushContext) {
@@ -43,23 +77,11 @@ func createTestTelemetries(configs []config.Config, t *testing.T) (*Telemetries,
 		store.add(cfg)
 	}
 	m := mesh.DefaultMeshConfig()
-	jsonTextProvider := &meshconfig.MeshConfig_ExtensionProvider{
-		Name: "envoy-json",
-		Provider: &meshconfig.MeshConfig_ExtensionProvider_EnvoyFileAccessLog{
-			EnvoyFileAccessLog: &meshconfig.MeshConfig_ExtensionProvider_EnvoyFileAccessLogProvider{
-				Path: "/dev/null",
-				LogFormat: &meshconfig.MeshConfig_ExtensionProvider_EnvoyFileAccessLogProvider_LogFormat{
-					LogFormat: &meshconfig.MeshConfig_ExtensionProvider_EnvoyFileAccessLogProvider_LogFormat_Labels{
-						Labels: &structpb.Struct{},
-					},
-				},
-			},
-		},
-	}
+
 	m.ExtensionProviders = append(m.ExtensionProviders, jsonTextProvider)
 
 	environment := &Environment{
-		ConfigStore: MakeIstioStore(store),
+		ConfigStore: store,
 		Watcher:     mesh.NewFixedWatcher(m),
 	}
 	telemetries, err := getTelemetries(environment)
@@ -147,7 +169,11 @@ const (
 )
 
 func TestTracing(t *testing.T) {
-	sidecar := &Proxy{ConfigNamespace: "default", Metadata: &NodeMetadata{Labels: map[string]string{"app": "test"}}}
+	sidecar := &Proxy{
+		ConfigNamespace: "default",
+		Labels:          map[string]string{"app": "test"},
+		Metadata:        &NodeMetadata{Labels: map[string]string{"app": "test"}},
+	}
 	envoy := &tpb.Telemetry{
 		Tracing: []*tpb.Tracing{
 			{
@@ -474,7 +500,11 @@ func TestTelemetryFilters(t *testing.T) {
 			},
 		},
 	}}
-	sidecar := &Proxy{ConfigNamespace: "default", Metadata: &NodeMetadata{Labels: map[string]string{"app": "test"}}}
+	sidecar := &Proxy{
+		ConfigNamespace: "default",
+		Labels:          map[string]string{"app": "test"},
+		Metadata:        &NodeMetadata{Labels: map[string]string{"app": "test"}},
+	}
 	emptyPrometheus := &tpb.Telemetry{
 		Metrics: []*tpb.Metrics{
 			{
@@ -487,6 +517,22 @@ func TestTelemetryFilters(t *testing.T) {
 			{
 				Providers: []*tpb.ProviderRef{{Name: "prometheus"}},
 				Overrides: overrides,
+			},
+		},
+	}
+	reportingInterval := &tpb.Telemetry{
+		Metrics: []*tpb.Metrics{
+			{
+				Providers:         []*tpb.ProviderRef{{Name: "prometheus"}},
+				ReportingInterval: durationpb.New(15 * time.Second),
+			},
+		},
+	}
+	overridesInterval := &tpb.Telemetry{
+		Metrics: []*tpb.Metrics{
+			{
+				Providers:         []*tpb.ProviderRef{{Name: "prometheus"}},
+				ReportingInterval: durationpb.New(10 * time.Second),
 			},
 		},
 	}
@@ -551,6 +597,8 @@ func TestTelemetryFilters(t *testing.T) {
 		},
 	}
 
+	cfg := `{"metrics":[{"dimensions":{"add":"bar"},"name":"requests_total","tags_to_remove":["remove"]}]}`
+
 	tests := []struct {
 		name             string
 		cfgs             []config.Config
@@ -601,7 +649,7 @@ func TestTelemetryFilters(t *testing.T) {
 			networking.ListenerProtocolHTTP,
 			nil,
 			map[string]string{
-				"istio.stats": `{"metrics":[{"dimensions":{"add":"bar"},"name":"requests_total","tags_to_remove":["remove"]}]}`,
+				"istio.stats": cfg,
 			},
 		},
 		{
@@ -634,7 +682,7 @@ func TestTelemetryFilters(t *testing.T) {
 			networking.ListenerProtocolHTTP,
 			nil,
 			map[string]string{
-				"istio.stats": `{"metrics":[{"dimensions":{"add":"bar"},"name":"requests_total","tags_to_remove":["remove"]}]}`,
+				"istio.stats": cfg,
 			},
 		},
 		{
@@ -645,7 +693,32 @@ func TestTelemetryFilters(t *testing.T) {
 			networking.ListenerProtocolTCP,
 			nil,
 			map[string]string{
-				"istio.stats": `{"metrics":[{"dimensions":{"add":"bar"},"name":"requests_total","tags_to_remove":["remove"]}]}`,
+				"istio.stats": cfg,
+			},
+		},
+		{
+			"reporting-interval",
+			[]config.Config{newTelemetry("istio-system", reportingInterval)},
+			sidecar,
+			networking.ListenerClassSidecarOutbound,
+			networking.ListenerProtocolHTTP,
+			nil,
+			map[string]string{
+				"istio.stats": `{"tcp_reporting_duration":"15s"}`,
+			},
+		},
+		{
+			"override-interval",
+			[]config.Config{
+				newTelemetry("istio-system", reportingInterval),
+				newTelemetry("default", overridesInterval),
+			},
+			sidecar,
+			networking.ListenerClassSidecarOutbound,
+			networking.ListenerProtocolHTTP,
+			nil,
+			map[string]string{
+				"istio.stats": `{"tcp_reporting_duration":"10s"}`,
 			},
 		},
 		{
@@ -696,7 +769,7 @@ func TestTelemetryFilters(t *testing.T) {
 			networking.ListenerProtocolHTTP,
 			nil,
 			map[string]string{
-				"istio.stats": `{"metrics":[{"dimensions":{"add":"bar"},"name":"requests_total","tags_to_remove":["remove"]}]}`,
+				"istio.stats": cfg,
 			},
 		},
 		{
@@ -709,7 +782,7 @@ func TestTelemetryFilters(t *testing.T) {
 			networking.ListenerProtocolHTTP,
 			&meshconfig.MeshConfig_DefaultProviders{Metrics: []string{"prometheus"}},
 			map[string]string{
-				"istio.stats": `{"metrics":[{"dimensions":{"add":"bar"},"name":"requests_total","tags_to_remove":["remove"]}]}`,
+				"istio.stats": cfg,
 			},
 		},
 		{
@@ -772,40 +845,58 @@ func TestTelemetryFilters(t *testing.T) {
 			telemetry.meshConfig.DefaultProviders = tt.defaultProviders
 			got := telemetry.telemetryFilters(tt.proxy, tt.class, tt.protocol)
 			res := map[string]string{}
-			http, ok := got.([]*httppb.HttpFilter)
+			http, ok := got.([]*hcm.HttpFilter)
 			if ok {
 				for _, f := range http {
-					w := &httpwasm.Wasm{}
+					if strings.HasSuffix(f.GetTypedConfig().GetTypeUrl(), "/stats.PluginConfig") {
+						w := &stats.PluginConfig{}
+						if err := f.GetTypedConfig().UnmarshalTo(w); err != nil {
+							t.Fatal(err)
+						}
+						cfgJSON, _ := protomarshal.MarshalProtoNames(w)
+						res[f.GetName()] = string(cfgJSON)
+					} else {
+						w := &httpwasm.Wasm{}
 
-					if err := f.GetTypedConfig().UnmarshalTo(w); err != nil {
-						t.Fatal(err)
+						if err := f.GetTypedConfig().UnmarshalTo(w); err != nil {
+							t.Fatal(err)
+						}
+						cfg := &wrappers.StringValue{}
+						if err := w.GetConfig().GetConfiguration().UnmarshalTo(cfg); err != nil {
+							t.Fatal(err)
+						}
+						if _, dupe := res[f.GetName()]; dupe {
+							t.Fatalf("duplicate filter found: %v", f.GetName())
+						}
+						res[f.GetName()] = cfg.GetValue()
 					}
-					cfg := &wrappers.StringValue{}
-					if err := w.GetConfig().GetConfiguration().UnmarshalTo(cfg); err != nil {
-						t.Fatal(err)
-					}
-					if _, dupe := res[f.GetName()]; dupe {
-						t.Fatalf("duplicate filter found: %v", f.GetName())
-					}
-					res[f.GetName()] = cfg.GetValue()
 				}
 			}
 			tcp, ok := got.([]*listener.Filter)
 			if ok {
 				for _, f := range tcp {
-					w := &wasmfilter.Wasm{}
+					if strings.HasSuffix(f.GetTypedConfig().GetTypeUrl(), "/stats.PluginConfig") {
+						w := &stats.PluginConfig{}
+						if err := f.GetTypedConfig().UnmarshalTo(w); err != nil {
+							t.Fatal(err)
+						}
+						cfgJSON, _ := protomarshal.MarshalProtoNames(w)
+						res[f.GetName()] = string(cfgJSON)
+					} else {
+						w := &wasmfilter.Wasm{}
 
-					if err := f.GetTypedConfig().UnmarshalTo(w); err != nil {
-						t.Fatal(err)
+						if err := f.GetTypedConfig().UnmarshalTo(w); err != nil {
+							t.Fatal(err)
+						}
+						cfg := &wrappers.StringValue{}
+						if err := w.GetConfig().GetConfiguration().UnmarshalTo(cfg); err != nil {
+							t.Fatal(err)
+						}
+						if _, dupe := res[f.GetName()]; dupe {
+							t.Fatalf("duplicate filter found: %v", f.GetName())
+						}
+						res[f.GetName()] = cfg.GetValue()
 					}
-					cfg := &wrappers.StringValue{}
-					if err := w.GetConfig().GetConfiguration().UnmarshalTo(cfg); err != nil {
-						t.Fatal(err)
-					}
-					if _, dupe := res[f.GetName()]; dupe {
-						t.Fatalf("duplicate filter found: %v", f.GetName())
-					}
-					res[f.GetName()] = cfg.GetValue()
 				}
 			}
 			if diff := cmp.Diff(res, tt.want); diff != "" {

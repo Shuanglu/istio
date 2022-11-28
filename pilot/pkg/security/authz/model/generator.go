@@ -20,6 +20,7 @@ import (
 
 	rbacpb "github.com/envoyproxy/go-control-plane/envoy/config/rbac/v3"
 
+	"istio.io/istio/pilot/pkg/networking/util"
 	"istio.io/istio/pilot/pkg/security/authz/matcher"
 	sm "istio.io/istio/pilot/pkg/security/model"
 	"istio.io/istio/pkg/spiffe"
@@ -27,20 +28,20 @@ import (
 
 type generator interface {
 	permission(key, value string, forTCP bool) (*rbacpb.Permission, error)
-	principal(key, value string, forTCP bool) (*rbacpb.Principal, error)
+	principal(key, value string, forTCP bool, useAuthenticated bool) (*rbacpb.Principal, error)
 }
 
 type destIPGenerator struct{}
 
 func (destIPGenerator) permission(_, value string, _ bool) (*rbacpb.Permission, error) {
-	cidrRange, err := matcher.CidrRange(value)
+	cidrRange, err := util.AddrStrToCidrRange(value)
 	if err != nil {
 		return nil, err
 	}
 	return permissionDestinationIP(cidrRange), nil
 }
 
-func (destIPGenerator) principal(_, _ string, _ bool) (*rbacpb.Principal, error) {
+func (destIPGenerator) principal(_, _ string, _ bool, _ bool) (*rbacpb.Principal, error) {
 	return nil, fmt.Errorf("unimplemented")
 }
 
@@ -54,7 +55,7 @@ func (destPortGenerator) permission(_, value string, _ bool) (*rbacpb.Permission
 	return permissionDestinationPort(portValue), nil
 }
 
-func (destPortGenerator) principal(_, _ string, _ bool) (*rbacpb.Principal, error) {
+func (destPortGenerator) principal(_, _ string, _ bool, _ bool) (*rbacpb.Principal, error) {
 	return nil, fmt.Errorf("unimplemented")
 }
 
@@ -65,7 +66,7 @@ func (connSNIGenerator) permission(_, value string, _ bool) (*rbacpb.Permission,
 	return permissionRequestedServerName(m), nil
 }
 
-func (connSNIGenerator) principal(_, _ string, _ bool) (*rbacpb.Principal, error) {
+func (connSNIGenerator) principal(_, _ string, _ bool, _ bool) (*rbacpb.Principal, error) {
 	return nil, fmt.Errorf("unimplemented")
 }
 
@@ -89,7 +90,7 @@ func (envoyFilterGenerator) permission(key, value string, _ bool) (*rbacpb.Permi
 	return permissionMetadata(m), nil
 }
 
-func (envoyFilterGenerator) principal(_, _ string, _ bool) (*rbacpb.Principal, error) {
+func (envoyFilterGenerator) principal(_, _ string, _ bool, _ bool) (*rbacpb.Principal, error) {
 	return nil, fmt.Errorf("unimplemented")
 }
 
@@ -99,8 +100,8 @@ func (srcIPGenerator) permission(_, _ string, _ bool) (*rbacpb.Permission, error
 	return nil, fmt.Errorf("unimplemented")
 }
 
-func (srcIPGenerator) principal(_, value string, _ bool) (*rbacpb.Principal, error) {
-	cidr, err := matcher.CidrRange(value)
+func (srcIPGenerator) principal(_, value string, _ bool, _ bool) (*rbacpb.Principal, error) {
+	cidr, err := util.AddrStrToCidrRange(value)
 	if err != nil {
 		return nil, err
 	}
@@ -113,8 +114,8 @@ func (remoteIPGenerator) permission(_, _ string, _ bool) (*rbacpb.Permission, er
 	return nil, fmt.Errorf("unimplemented")
 }
 
-func (remoteIPGenerator) principal(_, value string, _ bool) (*rbacpb.Principal, error) {
-	cidr, err := matcher.CidrRange(value)
+func (remoteIPGenerator) principal(_, value string, _ bool, _ bool) (*rbacpb.Principal, error) {
+	cidr, err := util.AddrStrToCidrRange(value)
 	if err != nil {
 		return nil, err
 	}
@@ -127,10 +128,10 @@ func (srcNamespaceGenerator) permission(_, _ string, _ bool) (*rbacpb.Permission
 	return nil, fmt.Errorf("unimplemented")
 }
 
-func (srcNamespaceGenerator) principal(_, value string, _ bool) (*rbacpb.Principal, error) {
+func (srcNamespaceGenerator) principal(_, value string, _ bool, useAuthenticated bool) (*rbacpb.Principal, error) {
 	v := strings.Replace(value, "*", ".*", -1)
 	m := matcher.StringMatcherRegex(fmt.Sprintf(".*/ns/%s/.*", v))
-	return principalAuthenticated(m), nil
+	return principalAuthenticated(m, useAuthenticated), nil
 }
 
 type srcPrincipalGenerator struct{}
@@ -139,9 +140,9 @@ func (srcPrincipalGenerator) permission(_, _ string, _ bool) (*rbacpb.Permission
 	return nil, fmt.Errorf("unimplemented")
 }
 
-func (srcPrincipalGenerator) principal(key, value string, _ bool) (*rbacpb.Principal, error) {
+func (srcPrincipalGenerator) principal(key, value string, _ bool, useAuthenticated bool) (*rbacpb.Principal, error) {
 	m := matcher.StringMatcherWithPrefix(value, spiffe.URIPrefix)
-	return principalAuthenticated(m), nil
+	return principalAuthenticated(m, useAuthenticated), nil
 }
 
 type requestPrincipalGenerator struct{}
@@ -150,7 +151,7 @@ func (requestPrincipalGenerator) permission(_, _ string, _ bool) (*rbacpb.Permis
 	return nil, fmt.Errorf("unimplemented")
 }
 
-func (requestPrincipalGenerator) principal(key, value string, forTCP bool) (*rbacpb.Principal, error) {
+func (requestPrincipalGenerator) principal(key, value string, forTCP bool, _ bool) (*rbacpb.Principal, error) {
 	if forTCP {
 		return nil, fmt.Errorf("%q is HTTP only", key)
 	}
@@ -165,8 +166,8 @@ func (requestAudiencesGenerator) permission(key, value string, forTCP bool) (*rb
 	return requestPrincipalGenerator{}.permission(key, value, forTCP)
 }
 
-func (requestAudiencesGenerator) principal(key, value string, forTCP bool) (*rbacpb.Principal, error) {
-	return requestPrincipalGenerator{}.principal(key, value, forTCP)
+func (requestAudiencesGenerator) principal(key, value string, forTCP bool, useAuthenticated bool) (*rbacpb.Principal, error) {
+	return requestPrincipalGenerator{}.principal(key, value, forTCP, useAuthenticated)
 }
 
 type requestPresenterGenerator struct{}
@@ -175,8 +176,8 @@ func (requestPresenterGenerator) permission(key, value string, forTCP bool) (*rb
 	return requestPrincipalGenerator{}.permission(key, value, forTCP)
 }
 
-func (requestPresenterGenerator) principal(key, value string, forTCP bool) (*rbacpb.Principal, error) {
-	return requestPrincipalGenerator{}.principal(key, value, forTCP)
+func (requestPresenterGenerator) principal(key, value string, forTCP bool, useAuthenticated bool) (*rbacpb.Principal, error) {
+	return requestPrincipalGenerator{}.principal(key, value, forTCP, useAuthenticated)
 }
 
 type requestHeaderGenerator struct{}
@@ -185,7 +186,7 @@ func (requestHeaderGenerator) permission(_, _ string, _ bool) (*rbacpb.Permissio
 	return nil, fmt.Errorf("unimplemented")
 }
 
-func (requestHeaderGenerator) principal(key, value string, forTCP bool) (*rbacpb.Principal, error) {
+func (requestHeaderGenerator) principal(key, value string, forTCP bool, _ bool) (*rbacpb.Principal, error) {
 	if forTCP {
 		return nil, fmt.Errorf("%q is HTTP only", key)
 	}
@@ -204,7 +205,7 @@ func (requestClaimGenerator) permission(_, _ string, _ bool) (*rbacpb.Permission
 	return nil, fmt.Errorf("unimplemented")
 }
 
-func (requestClaimGenerator) principal(key, value string, forTCP bool) (*rbacpb.Principal, error) {
+func (requestClaimGenerator) principal(key, value string, forTCP bool, _ bool) (*rbacpb.Principal, error) {
 	if forTCP {
 		return nil, fmt.Errorf("%q is HTTP only", key)
 	}
@@ -229,7 +230,7 @@ func (hg hostGenerator) permission(key, value string, forTCP bool) (*rbacpb.Perm
 	return permissionHeader(matcher.HostMatcher(hostHeader, value)), nil
 }
 
-func (hostGenerator) principal(key, value string, forTCP bool) (*rbacpb.Principal, error) {
+func (hostGenerator) principal(key, value string, forTCP bool, _ bool) (*rbacpb.Principal, error) {
 	return nil, fmt.Errorf("unimplemented")
 }
 
@@ -244,7 +245,7 @@ func (g pathGenerator) permission(key, value string, forTCP bool) (*rbacpb.Permi
 	return permissionPath(m), nil
 }
 
-func (pathGenerator) principal(key, value string, forTCP bool) (*rbacpb.Principal, error) {
+func (pathGenerator) principal(key, value string, forTCP bool, _ bool) (*rbacpb.Principal, error) {
 	return nil, fmt.Errorf("unimplemented")
 }
 
@@ -259,6 +260,6 @@ func (methodGenerator) permission(key, value string, forTCP bool) (*rbacpb.Permi
 	return permissionHeader(m), nil
 }
 
-func (methodGenerator) principal(key, value string, forTCP bool) (*rbacpb.Principal, error) {
+func (methodGenerator) principal(key, value string, forTCP bool, _ bool) (*rbacpb.Principal, error) {
 	return nil, fmt.Errorf("unimplemented")
 }

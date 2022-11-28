@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,7 +19,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/gogo/protobuf/types"
+	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"istio.io/istio/pkg/config/legacy/source/kube"
 	"istio.io/istio/pkg/config/resource"
@@ -38,7 +39,7 @@ var K8SCollection1 = collection.Builder{
 		Plural:        "Kind1s",
 		Version:       "v1alpha1",
 		Proto:         "google.protobuf.Struct",
-		ReflectType:   reflect.TypeOf(&types.Struct{}).Elem(),
+		ReflectType:   reflect.TypeOf(&structpb.Struct{}).Elem(),
 		ProtoPackage:  "github.com/gogo/protobuf/types",
 		ClusterScoped: false,
 		ValidateProto: validation.EmptyValidate,
@@ -53,7 +54,7 @@ func createTestResource(t *testing.T, ns, name, version string) *resource.Instan
 			FullName: rname,
 			Version:  resource.Version(version),
 		},
-		Message: &types.Empty{},
+		Message: &emptypb.Empty{},
 		Origin: &kube.Origin{
 			FullName: rname,
 		},

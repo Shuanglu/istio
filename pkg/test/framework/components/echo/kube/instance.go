@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-multierror"
-	kubeCore "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"istio.io/istio/pkg/config/protocol"
@@ -94,7 +94,7 @@ func newInstance(ctx resource.Context, originalCfg echo.Config) (out *instance, 
 	c.clusterIP = s.Spec.ClusterIP
 	c.clusterIPs = s.Spec.ClusterIPs
 	switch c.clusterIP {
-	case kubeCore.ClusterIPNone, "":
+	case corev1.ClusterIPNone, "":
 		if !cfg.Headless {
 			return nil, fmt.Errorf("invalid ClusterIP %s for non-headless service %s/%s",
 				c.clusterIP,
@@ -227,6 +227,53 @@ func (c *instance) CallOrFail(t test.Failer, opts echo.CallOptions) echo.CallRes
 		t.Fatal(err)
 	}
 	return r
+}
+
+func (c *instance) GetWorkloadLabels(labels map[string]string) error {
+	for _, wl := range c.workloadMgr.workloads {
+		wl.mutex.Lock()
+		pod := wl.pod
+		wl.mutex.Unlock()
+		if pod.Name != "" {
+			pod.Labels = labels
+			_, err := wl.Cluster().Kube().CoreV1().Pods(c.NamespaceName()).Update(context.TODO(), &pod, metav1.UpdateOptions{})
+			return fmt.Errorf("update pod labels failed: %v", err)
+		}
+	}
+	return nil
+}
+
+func (c *instance) UpdateWorkloadLabel(add map[string]string, remove []string) error {
+	for _, wl := range c.workloadMgr.workloads {
+		wl.mutex.Lock()
+		pod := wl.pod
+		wl.mutex.Unlock()
+		if pod.Name != "" {
+			return retry.UntilSuccess(func() (err error) {
+				pod, err := wl.Cluster().Kube().CoreV1().Pods(c.NamespaceName()).Get(context.TODO(), pod.Name, metav1.GetOptions{})
+				if err != nil {
+					return fmt.Errorf("get pod %s/%s failed: %v", pod.Namespace, pod.Name, err)
+				}
+				newLabels := make(map[string]string)
+				for k, v := range pod.GetLabels() {
+					newLabels[k] = v
+				}
+				for k, v := range add {
+					newLabels[k] = v
+				}
+				for _, k := range remove {
+					delete(newLabels, k)
+				}
+				pod.Labels = newLabels
+				_, err = wl.Cluster().Kube().CoreV1().Pods(c.NamespaceName()).Update(context.TODO(), pod, metav1.UpdateOptions{})
+				if err != nil {
+					return fmt.Errorf("update pod labels failed: %v", err)
+				}
+				return nil
+			}, retry.Timeout(c.cfg.ReadinessTimeout), startDelay)
+		}
+	}
+	return nil
 }
 
 func (c *instance) Restart() error {

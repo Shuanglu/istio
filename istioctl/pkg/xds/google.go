@@ -76,7 +76,7 @@ type hubMembership struct {
 	WorkloadIdentityPool string
 }
 
-func getHubMembership(ctx context.Context, exClient kube.ExtendedClient) (*hubMembership, error) {
+func getHubMembership(ctx context.Context, exClient kube.CLIClient) (*hubMembership, error) {
 	client := exClient.Dynamic()
 	gvr := schema.GroupVersionResource{
 		Group:    "hub.gke.io",
@@ -111,7 +111,8 @@ func mcpDialOptions(ctx context.Context, gcpProject string, k8sCreds credentials
 
 	return []grpc.DialOption{
 		grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{
-			RootCAs: systemRoots,
+			RootCAs:    systemRoots,
+			MinVersion: tls.VersionTLS12,
 		})),
 		grpc.WithPerRPCCredentials(&meshAuthCredentials{
 			k8sCreds: k8sCreds,

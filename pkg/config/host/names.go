@@ -32,7 +32,11 @@ func (h Names) Len() int {
 }
 
 func (h Names) Less(i, j int) bool {
-	a, b := h[i], h[j]
+	return MoreSpecific(h[i], h[j])
+}
+
+// MoreSpecific returns true if hostname a is more specific than b.
+func MoreSpecific(a, b Name) bool {
 	if len(a) == 0 && len(b) == 0 {
 		return true // doesn't matter, they're both the empty string
 	}
@@ -70,11 +74,12 @@ func (h Names) Contains(host Name) bool {
 
 // Intersection returns the subset of host names that are covered by both h and other.
 // e.g.:
-//  Names(["foo.com","bar.com"]).Intersection(Names(["*.com"]))         = Names(["foo.com","bar.com"])
-//  Names(["foo.com","*.net"]).Intersection(Names(["*.com","bar.net"])) = Names(["foo.com","bar.net"])
-//  Names(["foo.com","*.net"]).Intersection(Names(["*.bar.net"]))       = Names(["*.bar.net"])
-//  Names(["foo.com"]).Intersection(Names(["bar.com"]))                 = Names([])
-//  Names([]).Intersection(Names(["bar.com"])                           = Names([])
+//
+//	Names(["foo.com","bar.com"]).Intersection(Names(["*.com"]))         = Names(["foo.com","bar.com"])
+//	Names(["foo.com","*.net"]).Intersection(Names(["*.com","bar.net"])) = Names(["foo.com","bar.net"])
+//	Names(["foo.com","*.net"]).Intersection(Names(["*.bar.net"]))       = Names(["*.bar.net"])
+//	Names(["foo.com"]).Intersection(Names(["bar.com"]))                 = Names([])
+//	Names([]).Intersection(Names(["bar.com"])                           = Names([])
 func (h Names) Intersection(other Names) Names {
 	result := make(Names, 0, len(h))
 	for _, hHost := range h {

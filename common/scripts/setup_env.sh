@@ -73,7 +73,7 @@ fi
 
 # Build image to use
 if [[ "${IMAGE_VERSION:-}" == "" ]]; then
-  IMAGE_VERSION=master-8108c85d77550c2292ebc3c522b9eea1c0977eb1
+  IMAGE_VERSION=master-543df8650504fdcb1f3057c3e37683552739efc4
 fi
 if [[ "${IMAGE_NAME:-}" == "" ]]; then
   IMAGE_NAME=build-tools
@@ -93,7 +93,7 @@ IMG="${IMG:-gcr.io/istio-testing/${IMAGE_NAME}:${IMAGE_VERSION}}"
 
 CONTAINER_CLI="${CONTAINER_CLI:-docker}"
 
-ENV_BLOCKLIST="${ENV_BLOCKLIST:-^_\|^PATH=\|^GOPATH=\|^GOROOT=\|^SHELL=\|^EDITOR=\|^TMUX=\|^USER=\|^HOME=\|^PWD=\|^TERM=\|^rvm=\|^SSH=\|^TMPDIR=\|^CC=\|^CXX=\|^MAKEFILE_LIST=}"
+ENV_BLOCKLIST="${ENV_BLOCKLIST:-^_\|^PATH=\|^GOPATH=\|^GOROOT=\|^SHELL=\|^EDITOR=\|^TMUX=\|^USER=\|^HOME=\|^PWD=\|^TERM=\|^RUBY_\|^GEM_\|^rvm_\|^SSH=\|^TMPDIR=\|^CC=\|^CXX=\|^MAKEFILE_LIST=}"
 
 # Remove functions from the list of exported variables, they mess up with the `env` command.
 for f in $(declare -F -x | cut -d ' ' -f 3);
@@ -176,16 +176,13 @@ fi
 # This is used when we need to run a build artifact during tests or later as part of another
 # target.
 if [[ "${FOR_BUILD_CONTAINER:-0}" -eq "1" ]]; then
-  LOCAL_OUT="${TARGET_OUT_LINUX}"
-else
-  LOCAL_OUT="${TARGET_OUT}"
-fi
-
-if [[ "${FOR_BUILD_CONTAINER:-0}" -eq "1" ]]; then
   # Override variables with container specific
   TARGET_OUT=${CONTAINER_TARGET_OUT}
   TARGET_OUT_LINUX=${CONTAINER_TARGET_OUT_LINUX}
   REPO_ROOT=/work
+  LOCAL_OUT="${TARGET_OUT_LINUX}"
+else
+  LOCAL_OUT="${TARGET_OUT}"
 fi
 
 go_os_arch=${LOCAL_OUT##*/}

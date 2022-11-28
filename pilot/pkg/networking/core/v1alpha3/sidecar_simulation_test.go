@@ -392,7 +392,7 @@ func TestInboundClusters(t *testing.T) {
 			name += "-disableinbound"
 		}
 		t.Run(name, func(t *testing.T) {
-			test.SetBoolForTest(t, &features.EnableInboundPassthrough, !tt.disableInboundPassthrough)
+			test.SetForTest(t, &features.EnableInboundPassthrough, !tt.disableInboundPassthrough)
 			s := v1alpha3.NewConfigGenTest(t, v1alpha3.TestOptions{
 				Services:  tt.services,
 				Instances: tt.instances,
@@ -1570,8 +1570,11 @@ spec:
 			},
 		},
 	}
-	proxy := &model.Proxy{Metadata: &model.NodeMetadata{Labels: map[string]string{"app": "foo"}}}
-	test.SetBoolForTest(t, &features.EnableTLSOnSidecarIngress, true)
+	proxy := &model.Proxy{
+		Labels:   map[string]string{"app": "foo"},
+		Metadata: &model.NodeMetadata{Labels: map[string]string{"app": "foo"}},
+	}
+	test.SetForTest(t, &features.EnableTLSOnSidecarIngress, true)
 	for _, tt := range cases {
 		runSimulationTest(t, proxy, xds.FakeOptions{}, simulationTest{
 			name:   tt.name,
@@ -1623,8 +1626,8 @@ metadata:
   creationTimestamp: "{{.Time}}"
 spec:
   parentRefs:
-  - kind: Mesh
-    name: istio
+  - kind: TODO
+    name: TODO
 {{ with .PortMatch }}
     port: {{.}}
 {{ end }}
@@ -2437,7 +2440,9 @@ spec:
 			},
 		},
 	}
-	for _, variant := range []string{"httproute", "virtualservice"} {
+	// TODO test httproute when support for arbitrary hostnames is added in the GEP
+	// TODO for _, variant := range []string{"httproute", "virtualservice"} {
+	for _, variant := range []string{"virtualservice"} {
 		t.Run(variant, func(t *testing.T) {
 			for _, tt := range cases {
 				t.Run(tt.name, func(t *testing.T) {

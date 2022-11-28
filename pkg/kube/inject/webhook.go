@@ -29,7 +29,7 @@ import (
 
 	"github.com/prometheus/prometheus/util/strutil"
 	"gomodules.xyz/jsonpatch/v3"
-	kubeApiAdmissionv1 "k8s.io/api/admission/v1"
+	admissionv1 "k8s.io/api/admission/v1"
 	kubeApiAdmissionv1beta1 "k8s.io/api/admission/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -66,7 +66,7 @@ var (
 
 func init() {
 	_ = corev1.AddToScheme(runtimeScheme)
-	_ = kubeApiAdmissionv1.AddToScheme(runtimeScheme)
+	_ = admissionv1.AddToScheme(runtimeScheme)
 	_ = kubeApiAdmissionv1beta1.AddToScheme(runtimeScheme)
 }
 
@@ -123,7 +123,7 @@ func unmarshalConfig(data []byte) (*Config, error) {
 	log.Debugf("Policy: %v", c.Policy)
 	log.Debugf("AlwaysInjectSelector: %v", c.AlwaysInjectSelector)
 	log.Debugf("NeverInjectSelector: %v", c.NeverInjectSelector)
-	log.Debugf("Templates: |\n  %v", c.RawTemplates, "\n", "\n  ", -1)
+	log.Debugf("Templates: %v", c.RawTemplates)
 	return &c, nil
 }
 
@@ -400,10 +400,11 @@ func injectPod(req InjectionParameters) ([]byte, error) {
 // * templatePod: the rendered injection template. This is needed only to see what containers we injected
 // * finalPod: the current result of injection, roughly equivalent to the merging of originalPod and templatePod
 // There are essentially three cases we cover here:
-// 1. There is no overlap in containers in original and template pod. We will do nothing.
-// 2. There is an overlap (ie, both define istio-proxy), but that is because the pod is being re-injected.
-//    In this case we do nothing, since we want to apply the new settings
-// 3. There is an overlap. We will re-apply the original container.
+//  1. There is no overlap in containers in original and template pod. We will do nothing.
+//  2. There is an overlap (ie, both define istio-proxy), but that is because the pod is being re-injected.
+//     In this case we do nothing, since we want to apply the new settings
+//  3. There is an overlap. We will re-apply the original container.
+//
 // Where "overlap" is a container defined in both the original and template pod. Typically, this would mean
 // the user has defined an `istio-proxy` container in their own pod spec.
 func reapplyOverwrittenContainers(finalPod *corev1.Pod, originalPod *corev1.Pod, templatePod *corev1.Pod) (*corev1.Pod, error) {
@@ -958,8 +959,10 @@ func (wh *Webhook) serveInject(w http.ResponseWriter, r *http.Request) {
 		ar, err = kube.AdmissionReviewKubeToAdapter(out)
 		if err != nil {
 			handleError(fmt.Sprintf("Could not decode object: %v", err))
+			reviewResponse = toAdmissionResponse(err)
+		} else {
+			reviewResponse = wh.inject(ar, path)
 		}
-		reviewResponse = wh.inject(ar, path)
 	}
 
 	response := kube.AdmissionReview{}

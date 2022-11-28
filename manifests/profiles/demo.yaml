@@ -6,8 +6,12 @@ spec:
     extensionProviders:
     - name: otel
       envoyOtelAls:
-        service: otel-collector.istio-system.svc.cluster.local
+        service: opentelemetry-collector.istio-system.svc.cluster.local
         port: 4317
+    - name: skywalking
+      skywalking:
+        service: tracing.istio-system.svc.cluster.local
+        port: 11800
   components:
     egressGateways:
     - name: istio-egressgateway

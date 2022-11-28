@@ -38,7 +38,7 @@ const (
 	wfuzz     = "wfuzz"
 
 	authzDenyPolicy = `
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
   name: policy-deny
@@ -51,7 +51,7 @@ spec:
 `
 	jwtTool            = "jwttool"
 	requestAuthnPolicy = `
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: RequestAuthentication
 metadata:
   name: jwt
@@ -104,13 +104,8 @@ func deploy(t framework.TestContext, name, ns, yaml string) {
 func waitService(t framework.TestContext, name, ns string) {
 	if _, _, err := kube.WaitUntilServiceEndpointsAreReady(t.Clusters().Default().Kube(), ns, name); err != nil {
 		t.Fatalf("Wait for service %s failed: %v", name, err)
-		if name == apacheServer || name == nginxServer || name == tomcatServer {
-			if _, _, err := kube.WaitUntilServiceEndpointsAreReady(t.Clusters().Default().Kube(), ns, name); err != nil {
-				t.Fatalf("Wait for service %s failed: %v", name, err)
-			}
-		}
-		t.Logf("service %s is ready", name)
 	}
+	t.Logf("service %s is ready", name)
 }
 
 func ignoreTomcat(t framework.TestContext, line string, ignores []string) bool {

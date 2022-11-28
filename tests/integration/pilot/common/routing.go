@@ -56,16 +56,16 @@ const httpVirtualServiceTmpl = `
 apiVersion: networking.istio.io/v1alpha3
 kind: VirtualService
 metadata:
-  name: {{.VirtualServiceHost}}
+  name: "{{.VirtualServiceHost|replace "*" "wild"}}"
 spec:
   gateways:
   - {{.Gateway}}
   hosts:
-  - {{.VirtualServiceHost}}
+  - "{{.VirtualServiceHost}}"
   http:
   - route:
     - destination:
-        host: {{.VirtualServiceHost}}
+        host: "{{.DestinationHost | default .VirtualServiceHost}}"
         port:
           number: {{.Port}}
 {{- if .MatchScheme }}
@@ -84,9 +84,10 @@ func httpVirtualService(gateway, host string, port int) string {
 	return tmpl.MustEvaluate(httpVirtualServiceTmpl, struct {
 		Gateway            string
 		VirtualServiceHost string
+		DestinationHost    string
 		Port               int
 		MatchScheme        string
-	}{gateway, host, port, ""})
+	}{gateway, host, "", port, ""})
 }
 
 const gatewayTmpl = `
@@ -660,7 +661,8 @@ spec:
 	})
 
 	t.RunTraffic(TrafficTestCase{
-		name: "fault abort gRPC",
+		name:            "fault abort gRPC",
+		minIstioVersion: "1.15.0",
 		config: `
 apiVersion: networking.istio.io/v1alpha3
 kind: VirtualService
@@ -1172,7 +1174,7 @@ spec:
 		templateVars: func(src echo.Callers, dests echo.Instances) map[string]any {
 			// Test all cipher suites, including a fake one. Envoy should accept all of the ones on the "valid" list,
 			// and control plane should filter our invalid one.
-			return templateParams(protocol.HTTPS, src, dests, append(security.ValidCipherSuites.SortedList(), "fake"))
+			return templateParams(protocol.HTTPS, src, dests, append(sets.SortedList(security.ValidCipherSuites), "fake"))
 		},
 		setupOpts: fqdnHostHeader,
 		opts: echo.CallOptions{
@@ -1381,6 +1383,82 @@ spec:
 				"Gateway":            "gateway",
 				"VirtualServiceHost": dest.Config().ClusterLocalFQDN(),
 				"Port":               ports.All().MustForName("auto-http").ServicePort,
+			}
+		},
+	})
+	t.RunTraffic(TrafficTestCase{
+		name:             "wildcard hostname",
+		targetMatchers:   singleTarget,
+		workloadAgnostic: true,
+		viaIngress:       true,
+		config: `apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: gateway
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*.example.com"
+---
+` + httpVirtualServiceTmpl,
+		children: []TrafficCall{
+			{
+				name: "no port",
+				call: nil,
+				opts: echo.CallOptions{
+					HTTP: echo.HTTP{
+						HTTP2:   true,
+						Headers: headers.New().WithHost("foo.example.com").Build(),
+					},
+					Port: echo.Port{
+						Protocol: protocol.HTTP,
+					},
+					Check: check.OK(),
+				},
+			},
+			{
+				name: "correct port",
+				call: nil,
+				opts: echo.CallOptions{
+					HTTP: echo.HTTP{
+						HTTP2:   true,
+						Headers: headers.New().WithHost("foo.example.com:80").Build(),
+					},
+					Port: echo.Port{
+						Protocol: protocol.HTTP,
+					},
+					Check: check.OK(),
+				},
+			},
+			{
+				name: "random port",
+				call: nil,
+				opts: echo.CallOptions{
+					HTTP: echo.HTTP{
+						HTTP2:   true,
+						Headers: headers.New().WithHost("foo.example.com:12345").Build(),
+					},
+					Port: echo.Port{
+						Protocol: protocol.HTTP,
+					},
+					Check: check.OK(),
+				},
+			},
+		},
+		minIstioVersion: "1.15.0",
+		setupOpts:       noTarget,
+		templateVars: func(_ echo.Callers, dests echo.Instances) map[string]any {
+			return map[string]any{
+				"Gateway":            "gateway",
+				"VirtualServiceHost": "*.example.com",
+				"DestinationHost":    dests[0].Config().ClusterLocalFQDN(),
+				"Port":               ports.All().MustForName(ports.HTTP).ServicePort,
 			}
 		},
 	})
@@ -1679,26 +1757,33 @@ func hostCases(t TrafficContext) {
 			t.Fatalf("no workloads found")
 		}
 		address := wl[0].Address()
+		// We test all variants with no port, the expected port, and a random port.
 		hosts := []string{
 			cfg.ClusterLocalFQDN(),
 			fmt.Sprintf("%s:%d", cfg.ClusterLocalFQDN(), port),
+			fmt.Sprintf("%s:12345", cfg.ClusterLocalFQDN()),
 			fmt.Sprintf("%s.%s.svc", cfg.Service, cfg.Namespace.Name()),
 			fmt.Sprintf("%s.%s.svc:%d", cfg.Service, cfg.Namespace.Name(), port),
+			fmt.Sprintf("%s.%s.svc:12345", cfg.Service, cfg.Namespace.Name()),
 			cfg.Service,
 			fmt.Sprintf("%s:%d", cfg.Service, port),
+			fmt.Sprintf("%s:12345", cfg.Service),
 			fmt.Sprintf("some-instances.%s:%d", cfg.ClusterLocalFQDN(), port),
+			fmt.Sprintf("some-instances.%s:12345", cfg.ClusterLocalFQDN()),
 			fmt.Sprintf("some-instances.%s.%s.svc", cfg.Service, cfg.Namespace.Name()),
-			fmt.Sprintf("some-instances.%s.%s.svc:%d", cfg.Service, cfg.Namespace.Name(), port),
+			fmt.Sprintf("some-instances.%s.%s.svc:12345", cfg.Service, cfg.Namespace.Name()),
 			fmt.Sprintf("some-instances.%s", cfg.Service),
 			fmt.Sprintf("some-instances.%s:%d", cfg.Service, port),
+			fmt.Sprintf("some-instances.%s:12345", cfg.Service),
 			address,
 			fmt.Sprintf("%s:%d", address, port),
 		}
 		for _, h := range hosts {
 			name := strings.Replace(h, address, "ip", -1) + "/auto-http"
 			t.RunTraffic(TrafficTestCase{
-				name: name,
-				call: c.CallOrFail,
+				name:            name,
+				minIstioVersion: "1.15.0",
+				call:            c.CallOrFail,
 				opts: echo.CallOptions{
 					To:    t.Apps.Headless,
 					Count: 1,
@@ -1708,7 +1793,8 @@ func hostCases(t TrafficContext) {
 					HTTP: echo.HTTP{
 						Headers: HostHeader(h),
 					},
-					Check: check.OK(),
+					// check mTLS to ensure we are not hitting pass-through cluster
+					Check: check.And(check.OK(), check.MTLSForHTTP()),
 				},
 			})
 		}
@@ -1716,23 +1802,35 @@ func hostCases(t TrafficContext) {
 		hosts = []string{
 			cfg.ClusterLocalFQDN(),
 			fmt.Sprintf("%s:%d", cfg.ClusterLocalFQDN(), port),
+			fmt.Sprintf("%s:12345", cfg.ClusterLocalFQDN()),
 			fmt.Sprintf("%s.%s.svc", cfg.Service, cfg.Namespace.Name()),
 			fmt.Sprintf("%s.%s.svc:%d", cfg.Service, cfg.Namespace.Name(), port),
+			fmt.Sprintf("%s.%s.svc:12345", cfg.Service, cfg.Namespace.Name()),
 			cfg.Service,
 			fmt.Sprintf("%s:%d", cfg.Service, port),
+			fmt.Sprintf("%s:12345", cfg.Service),
 			fmt.Sprintf("some-instances.%s:%d", cfg.ClusterLocalFQDN(), port),
+			fmt.Sprintf("some-instances.%s:12345", cfg.ClusterLocalFQDN()),
 			fmt.Sprintf("some-instances.%s.%s.svc", cfg.Service, cfg.Namespace.Name()),
 			fmt.Sprintf("some-instances.%s.%s.svc:%d", cfg.Service, cfg.Namespace.Name(), port),
+			fmt.Sprintf("some-instances.%s.%s.svc:12345", cfg.Service, cfg.Namespace.Name()),
 			fmt.Sprintf("some-instances.%s", cfg.Service),
 			fmt.Sprintf("some-instances.%s:%d", cfg.Service, port),
+			fmt.Sprintf("some-instances.%s:12345", cfg.Service),
 			address,
 			fmt.Sprintf("%s:%d", address, port),
 		}
 		for _, h := range hosts {
 			name := strings.Replace(h, address, "ip", -1) + "/http"
+			assertion := check.And(check.OK(), check.MTLSForHTTP())
+			if strings.Contains(name, "ip") {
+				// we expect to actually do passthrough for the IP case
+				assertion = check.OK()
+			}
 			t.RunTraffic(TrafficTestCase{
-				name: name,
-				call: c.CallOrFail,
+				name:            name,
+				minIstioVersion: "1.15.0",
+				call:            c.CallOrFail,
 				opts: echo.CallOptions{
 					To: t.Apps.Headless,
 					Port: echo.Port{
@@ -1741,7 +1839,8 @@ func hostCases(t TrafficContext) {
 					HTTP: echo.HTTP{
 						Headers: HostHeader(h),
 					},
-					Check: check.OK(),
+					// check mTLS to ensure we are not hitting pass-through cluster
+					Check: assertion,
 				},
 			})
 		}
@@ -1750,15 +1849,15 @@ func hostCases(t TrafficContext) {
 
 // serviceCases tests overlapping Services. There are a few cases.
 // Consider we have our base service B, with service port P and target port T
-// 1) Another service, B', with P -> T. In this case, both the listener and the cluster will conflict.
-//    Because everything is workload oriented, this is not a problem unless they try to make them different
-//    protocols (this is explicitly called out as "not supported") or control inbound connectionPool settings
-//    (which is moving to Sidecar soon)
-// 2) Another service, B', with P -> T'. In this case, the listener will be distinct, since its based on the target.
-//    The cluster, however, will be shared, which is broken, because we should be forwarding to T when we call B, and T' when we call B'.
-// 3) Another service, B', with P' -> T. In this case, the listener is shared. This is fine, with the exception of different protocols
-//    The cluster is distinct.
-// 4) Another service, B', with P' -> T'. There is no conflicts here at all.
+//  1. Another service, B', with P -> T. In this case, both the listener and the cluster will conflict.
+//     Because everything is workload oriented, this is not a problem unless they try to make them different
+//     protocols (this is explicitly called out as "not supported") or control inbound connectionPool settings
+//     (which is moving to Sidecar soon)
+//  2. Another service, B', with P -> T'. In this case, the listener will be distinct, since its based on the target.
+//     The cluster, however, will be shared, which is broken, because we should be forwarding to T when we call B, and T' when we call B'.
+//  3. Another service, B', with P' -> T. In this case, the listener is shared. This is fine, with the exception of different protocols
+//     The cluster is distinct.
+//  4. Another service, B', with P' -> T'. There is no conflicts here at all.
 func serviceCases(t TrafficContext) {
 	for _, c := range t.Apps.A {
 		c := c
@@ -2006,10 +2105,11 @@ spec:
 				opts:   callOpts,
 			})
 			t.RunTraffic(TrafficTestCase{
-				name:   "tcp source ip " + c.Config().Service,
-				config: svc + tmpl.MustEvaluate(destRule, "useSourceIp: true"),
-				call:   c.CallOrFail,
-				opts:   tcpCallopts,
+				name:            "tcp source ip " + c.Config().Service,
+				minIstioVersion: "1.14.0",
+				config:          svc + tmpl.MustEvaluate(destRule, "useSourceIp: true"),
+				call:            c.CallOrFail,
+				opts:            tcpCallopts,
 				skip: skip{
 					skip:   c.Config().WorkloadClass() == echo.Proxyless,
 					reason: "", // TODO: is this a bug or WAI?
@@ -2025,9 +2125,9 @@ var ConsistentHostChecker echo.Checker = func(result echo.CallResult, _ error) e
 		hostnames[i] = r.Hostname
 	}
 	scopes.Framework.Infof("requests landed on hostnames: %v", hostnames)
-	unique := sets.New(hostnames...).SortedList()
+	unique := sets.SortedList(sets.New(hostnames...))
 	if len(unique) != 1 {
-		return fmt.Errorf("excepted only one destination, got: %v", unique)
+		return fmt.Errorf("expected only one destination, got: %v", unique)
 	}
 	return nil
 }
@@ -2864,6 +2964,13 @@ spec:
   jwtRules:
   - issuer: "test-issuer-1@istio.io"
     jwksUri: "https://raw.githubusercontent.com/istio/istio/master/tests/common/jwt/jwks.json"
+    outputClaimToHeaders:
+    - header: "x-jwt-nested-key"
+      claim: "nested.nested-2.key2"
+    - header: "x-jwt-iss"
+      claim: "iss"
+    - header: "x-jwt-wrong-header"
+      claim: "wrong_claim"
 ---
 `
 	podB := []match.Matcher{match.ServiceName(t.Apps.B.NamespacedName())}
@@ -2880,11 +2987,93 @@ spec:
 		"Host":                            {"foo.bar"},
 		"request.auth.claims.nested.key1": {"valueA"},
 	}
+	headersWithToken2 := map[string][]string{
+		"Host":             {"foo.bar"},
+		"Authorization":    {"Bearer " + jwt.TokenIssuer1WithNestedClaims2},
+		"X-Jwt-Nested-Key": {"value_to_be_replaced"},
+	}
+	headersWithToken2WithAddedHeader := map[string][]string{
+		"Host":               {"foo.bar"},
+		"Authorization":      {"Bearer " + jwt.TokenIssuer1WithNestedClaims2},
+		"x-jwt-wrong-header": {"header_to_be_deleted"},
+	}
 
 	type configData struct {
 		Name, Match, Value string
 	}
 
+	t.RunTraffic(TrafficTestCase{
+		name:             "matched with nested claim using claim to header:200",
+		targetMatchers:   podB,
+		workloadAgnostic: true,
+		viaIngress:       true,
+		config:           configAll,
+		templateVars: func(src echo.Callers, dest echo.Instances) map[string]any {
+			return map[string]any{
+				"Headers": []configData{{"X-Jwt-Nested-Key", "exact", "valueC"}},
+			}
+		},
+		opts: echo.CallOptions{
+			Count: 1,
+			Port: echo.Port{
+				Name:     "http",
+				Protocol: protocol.HTTP,
+			},
+			HTTP: echo.HTTP{
+				Headers: headersWithToken2,
+			},
+			Check: check.Status(http.StatusOK),
+		},
+	})
+	t.RunTraffic(TrafficTestCase{
+		name:             "matched with nested claim and single claim using claim to header:200",
+		targetMatchers:   podB,
+		workloadAgnostic: true,
+		viaIngress:       true,
+		config:           configAll,
+		templateVars: func(src echo.Callers, dest echo.Instances) map[string]any {
+			return map[string]any{
+				"Headers": []configData{
+					{"X-Jwt-Nested-Key", "exact", "valueC"},
+					{"X-Jwt-Iss", "exact", "test-issuer-1@istio.io"},
+				},
+			}
+		},
+		opts: echo.CallOptions{
+			Count: 1,
+			Port: echo.Port{
+				Name:     "http",
+				Protocol: protocol.HTTP,
+			},
+			HTTP: echo.HTTP{
+				Headers: headersWithToken2,
+			},
+			Check: check.Status(http.StatusOK),
+		},
+	})
+	t.RunTraffic(TrafficTestCase{
+		name:             "unmatched with wrong claim and added header:404",
+		targetMatchers:   podB,
+		workloadAgnostic: true,
+		viaIngress:       true,
+		config:           configAll,
+		templateVars: func(src echo.Callers, dest echo.Instances) map[string]any {
+			return map[string]any{
+				"Headers": []configData{{"x-jwt-wrong-header", "exact", "header_to_be_deleted"}},
+			}
+		},
+		opts: echo.CallOptions{
+			Count: 1,
+			Port: echo.Port{
+				Name:     "http",
+				Protocol: protocol.HTTP,
+			},
+			HTTP: echo.HTTP{
+				Headers: headersWithToken2WithAddedHeader,
+			},
+			Check: check.Status(http.StatusNotFound),
+		},
+	})
 	t.RunTraffic(TrafficTestCase{
 		name:             "matched with nested claims:200",
 		targetMatchers:   podB,
@@ -2917,6 +3106,32 @@ spec:
 		templateVars: func(src echo.Callers, dest echo.Instances) map[string]any {
 			return map[string]any{
 				"Headers": []configData{{"@request.auth.claims.sub", "prefix", "sub"}},
+			}
+		},
+		opts: echo.CallOptions{
+			Count: 1,
+			Port: echo.Port{
+				Name:     "http",
+				Protocol: protocol.HTTP,
+			},
+			HTTP: echo.HTTP{
+				Headers: headersWithToken,
+			},
+			Check: check.Status(http.StatusOK),
+		},
+	})
+	t.RunTraffic(TrafficTestCase{
+		name:             "matched multiple claims with regex:200",
+		targetMatchers:   podB,
+		workloadAgnostic: true,
+		viaIngress:       true,
+		config:           configAll,
+		templateVars: func(src echo.Callers, dest echo.Instances) map[string]any {
+			return map[string]any{
+				"Headers": []configData{
+					{"@request.auth.claims.sub", "regex", "(\\W|^)(sub-1|sub-2)(\\W|$)"},
+					{"@request.auth.claims.nested.key1", "regex", "(\\W|^)value[AB](\\W|$)"},
+				},
 			}
 		},
 		opts: echo.CallOptions{
@@ -3004,15 +3219,18 @@ spec:
 		},
 	})
 	t.RunTraffic(TrafficTestCase{
-		name:             "matched both with and without claims:200",
+		name:             "matched both with and without claims with regex:200",
 		targetMatchers:   podB,
 		workloadAgnostic: true,
 		viaIngress:       true,
 		config:           configAll,
 		templateVars: func(src echo.Callers, dest echo.Instances) map[string]any {
 			return map[string]any{
-				"Headers":        []configData{{"@request.auth.claims.sub", "prefix", "sub"}},
-				"WithoutHeaders": []configData{{"@request.auth.claims.nested.key1", "exact", "value-not-matched"}},
+				"Headers": []configData{{"@request.auth.claims.sub", "prefix", "sub"}},
+				"WithoutHeaders": []configData{
+					{"@request.auth.claims.nested.key1", "exact", "value-not-matched"},
+					{"@request.auth.claims.nested.key1", "regex", "(\\W|^)value\\s{0,3}not{0,1}\\s{0,3}matched(\\W|$)"},
+				},
 			}
 		},
 		opts: echo.CallOptions{

@@ -22,10 +22,11 @@ import (
 	"istio.io/istio/pilot/pkg/features"
 	"istio.io/istio/pilot/pkg/model"
 	"istio.io/istio/pilot/pkg/serviceregistry/kube"
-	"istio.io/istio/pilot/pkg/serviceregistry/kube/controller/filter"
 	"istio.io/istio/pkg/config/host"
 	"istio.io/istio/pkg/config/labels"
 	"istio.io/istio/pkg/config/schema/kind"
+	"istio.io/istio/pkg/kube/informer"
+	"istio.io/istio/pkg/util/sets"
 )
 
 // Pilot can get EDS information from Kubernetes from two mutually exclusive sources, Endpoints and
@@ -34,7 +35,7 @@ import (
 type kubeEndpointsController interface {
 	HasSynced() bool
 	Run(stopCh <-chan struct{})
-	getInformer() filter.FilteredSharedIndexInformer
+	getInformer() informer.FilteredSharedIndexInformer
 	onEvent(curr any, event model.Event) error
 	InstancesByPort(c *Controller, svc *model.Service, reqSvcPort int, labelsList labels.Instance) []*model.ServiceInstance
 	GetProxyServiceInstances(c *Controller, proxy *model.Proxy) []*model.ServiceInstance
@@ -48,7 +49,7 @@ type kubeEndpointsController interface {
 // kubeEndpoints abstracts the common behavior across endpoint and endpoint slices.
 type kubeEndpoints struct {
 	c        *Controller
-	informer filter.FilteredSharedIndexInformer
+	informer informer.FilteredSharedIndexInformer
 }
 
 func (e *kubeEndpoints) HasSynced() bool {
@@ -66,17 +67,14 @@ func processEndpointEvent(c *Controller, epc kubeEndpointsController, name strin
 	updateEDS(c, epc, ep, event)
 	if features.EnableHeadlessService {
 		if svc, _ := c.serviceLister.Services(namespace).Get(name); svc != nil {
-			for _, modelSvc := range c.servicesForNamespacedName(kube.NamespacedNameForK8sObject(svc)) {
-				// if the service is headless service, trigger a full push.
-				if svc.Spec.ClusterIP == v1.ClusterIPNone {
+			// if the service is headless service, trigger a full push.
+			if svc.Spec.ClusterIP == v1.ClusterIPNone {
+				for _, modelSvc := range c.servicesForNamespacedName(kube.NamespacedNameForK8sObject(svc)) {
 					c.opts.XDSUpdater.ConfigUpdate(&model.PushRequest{
 						Full: true,
 						// TODO: extend and set service instance type, so no need to re-init push context
-						ConfigsUpdated: map[model.ConfigKey]struct{}{{
-							Kind:      kind.ServiceEntry,
-							Name:      modelSvc.Hostname.String(),
-							Namespace: svc.Namespace,
-						}: {}},
+						ConfigsUpdated: sets.New(model.ConfigKey{Kind: kind.ServiceEntry, Name: modelSvc.Hostname.String(), Namespace: svc.Namespace}),
+
 						Reason: []model.TriggerReason{model.EndpointUpdate},
 					})
 					return nil
@@ -106,13 +104,15 @@ func updateEDS(c *Controller, epc kubeEndpointsController, ep any, event model.E
 			endpoints = epc.buildIstioEndpoints(ep, hostName)
 		}
 
-		svc := c.GetService(hostName)
-		if svc != nil {
-			fep := c.collectWorkloadInstanceEndpoints(svc)
-			endpoints = append(endpoints, fep...)
-		} else {
-			log.Debugf("Handle EDS endpoint: skip collecting workload entry endpoints, service %s/%s has not been populated",
-				namespacedName.Namespace, namespacedName.Name)
+		if features.EnableK8SServiceSelectWorkloadEntries {
+			svc := c.GetService(hostName)
+			if svc != nil {
+				fep := c.collectWorkloadInstanceEndpoints(svc)
+				endpoints = append(endpoints, fep...)
+			} else {
+				log.Debugf("Handle EDS endpoint: skip collecting workload entry endpoints, service %s/%s has not been populated",
+					namespacedName.Namespace, namespacedName.Name)
+			}
 		}
 
 		c.opts.XDSUpdater.EDSUpdate(shard, string(hostName), namespacedName.Namespace, endpoints)
@@ -121,11 +121,12 @@ func updateEDS(c *Controller, epc kubeEndpointsController, ep any, event model.E
 
 // getPod fetches a pod by name or IP address.
 // A pod may be missing (nil) for two reasons:
-// * It is an endpoint without an associated Pod. In this case, expectPod will be false.
-// * It is an endpoint with an associate Pod, but its not found. In this case, expectPod will be true.
-//   this may happen due to eventually consistency issues, out of order events, etc. In this case, the caller
-//   should not precede with the endpoint, or inaccurate information would be sent which may have impacts on
-//   correctness and security.
+//   - It is an endpoint without an associated Pod. In this case, expectPod will be false.
+//   - It is an endpoint with an associate Pod, but its not found. In this case, expectPod will be true.
+//     this may happen due to eventually consistency issues, out of order events, etc. In this case, the caller
+//     should not precede with the endpoint, or inaccurate information would be sent which may have impacts on
+//     correctness and security.
+//
 // Note: this is only used by endpoints and endpointslice controller
 func getPod(c *Controller, ip string, ep *metav1.ObjectMeta, targetRef *v1.ObjectReference, host host.Name) (*v1.Pod, bool) {
 	var expectPod bool

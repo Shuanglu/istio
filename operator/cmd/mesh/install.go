@@ -43,6 +43,7 @@ import (
 	"istio.io/istio/operator/pkg/util/progress"
 	pkgversion "istio.io/istio/operator/pkg/version"
 	operatorVer "istio.io/istio/operator/version"
+	"istio.io/istio/pkg/config/constants"
 	"istio.io/istio/pkg/config/labels"
 	"istio.io/istio/pkg/kube"
 	"istio.io/pkg/log"
@@ -68,7 +69,7 @@ type InstallArgs struct {
 	// Set is a string with element format "path=value" where path is an IstioOperator path and the value is a
 	// value to set the node at that path to.
 	Set []string
-	// ManifestsPath is a path to a ManifestsPath and profiles directory in the local filesystem, or URL with a release tgz.
+	// ManifestsPath is a path to a ManifestsPath and profiles directory in the local filesystem with a release tgz.
 	ManifestsPath string
 	// Revision is the Istio control plane revision the command targets.
 	Revision string
@@ -194,17 +195,16 @@ func Install(rootArgs *RootArgs, iArgs *InstallArgs, logOpts *log.Options, stdOu
 
 	// Detect whether previous installation exists prior to performing the installation.
 	exists := revtag.PreviousInstallExists(context.Background(), kubeClient.Kube())
-	pilotEnabled := iop.Spec.Components.Pilot != nil && iop.Spec.Components.Pilot.Enabled.Value
 	rev := iop.Spec.Revision
-	if rev == "" && pilotEnabled {
-		_ = revtag.DeleteTagWebhooks(context.Background(), kubeClient.Kube(), revtag.DefaultRevisionName)
-	}
+	isDefaultInstallation := rev == "" && iop.Spec.Components.Pilot != nil && iop.Spec.Components.Pilot.Enabled.Value
+	operatorManageWebhooks := operatorManageWebhooks(iop)
+
 	iop, err = InstallManifests(iop, iArgs.Force, rootArgs.DryRun, kubeClient, client, iArgs.ReadinessTimeout, l)
 	if err != nil {
 		return fmt.Errorf("failed to install manifests: %v", err)
 	}
 
-	if !exists || rev == "" && pilotEnabled {
+	if !operatorManageWebhooks && (!exists || isDefaultInstallation) {
 		p.Println("Making this installation the default for injection and validation.")
 		if rev == "" {
 			rev = revtag.DefaultRevisionName
@@ -247,6 +247,23 @@ func Install(rootArgs *RootArgs, iArgs *InstallArgs, logOpts *log.Options, stdOu
 	}
 
 	return nil
+}
+
+// operatorManageWebhooks returns .Values.global.operatorManageWebhooks from the Istio Operator.
+func operatorManageWebhooks(iop *v1alpha12.IstioOperator) bool {
+	if iop.Spec.GetValues() == nil {
+		return false
+	}
+	globalValues := iop.Spec.Values.AsMap()["global"]
+	global, ok := globalValues.(map[string]any)
+	if !ok {
+		return false
+	}
+	omw, ok := global["operatorManageWebhooks"].(bool)
+	if !ok {
+		return false
+	}
+	return omw
 }
 
 // InstallManifests generates manifests from the given istiooperator instance and applies them to the
@@ -306,7 +323,7 @@ func savedIOPName(iop *v1alpha12.IstioOperator) string {
 
 // detectIstioVersionDiff will show warning if istioctl version and control plane version are different
 // nolint: interfacer
-func detectIstioVersionDiff(p Printer, tag string, ns string, kubeClient kube.ExtendedClient, setFlags []string) error {
+func detectIstioVersionDiff(p Printer, tag string, ns string, kubeClient kube.CLIClient, setFlags []string) error {
 	warnMarker := color.New(color.FgYellow).Add(color.Italic).Sprint("WARNING:")
 	icps, err := kubeClient.GetIstioVersions(context.TODO(), ns)
 	if err != nil {
@@ -400,7 +417,7 @@ func getProfileNSAndEnabledComponents(iop *v1alpha12.IstioOperator) (string, str
 	if configuredNamespace := v1alpha12.Namespace(iop.Spec); configuredNamespace != "" {
 		return iop.Spec.Profile, configuredNamespace, enabledComponents, nil
 	}
-	return iop.Spec.Profile, name.IstioDefaultNamespace, enabledComponents, nil
+	return iop.Spec.Profile, constants.IstioSystemNamespace, enabledComponents, nil
 }
 
 // validateEnableNamespacesByDefault checks whether there is .Values.sidecarInjectorWebhook.enableNamespacesByDefault set in the Istio Operator.

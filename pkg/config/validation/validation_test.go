@@ -423,7 +423,7 @@ func TestValidateProtocolDetectionTimeout(t *testing.T) {
 }
 
 func TestValidateMeshConfig(t *testing.T) {
-	if ValidateMeshConfig(&meshconfig.MeshConfig{}) == nil {
+	if _, err := ValidateMeshConfig(&meshconfig.MeshConfig{}); err == nil {
 		t.Error("expected an error on an empty mesh config")
 	}
 
@@ -446,7 +446,7 @@ func TestValidateMeshConfig(t *testing.T) {
 		},
 	}
 
-	err := ValidateMeshConfig(invalid)
+	_, err := ValidateMeshConfig(invalid)
 	if err == nil {
 		t.Errorf("expected an error on invalid proxy mesh config: %v", invalid)
 	} else {
@@ -2264,7 +2264,7 @@ func TestValidateHTTPDirectResponse(t *testing.T) {
 }
 
 func TestValidateDestinationWithInheritance(t *testing.T) {
-	test.SetBoolForTest(t, &features.EnableDestinationRuleInheritance, true)
+	test.SetForTest(t, &features.EnableDestinationRuleInheritance, true)
 	cases := []struct {
 		name  string
 		in    proto.Message
@@ -3909,9 +3909,9 @@ func TestValidateLoadBalancer(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		if got := validateLoadBalancer(c.in); (got == nil) != c.valid {
+		if got := validateLoadBalancer(c.in, nil); (got.Err == nil) != c.valid {
 			t.Errorf("validateLoadBalancer failed on %v: got valid=%v but wanted valid=%v: %v",
-				c.name, got == nil, c.valid, got)
+				c.name, got.Err == nil, c.valid, got)
 		}
 	}
 }
@@ -3997,7 +3997,9 @@ func TestValidateEnvoyFilter(t *testing.T) {
 		warning string
 	}{
 		{name: "empty filters", in: &networking.EnvoyFilter{}, error: ""},
-
+		{name: "labels not defined in workload selector", in: &networking.EnvoyFilter{
+			WorkloadSelector: &networking.WorkloadSelector{},
+		}, error: "", warning: "Envoy filter: workload selector specified without labels, will be applied to all services in namespace"},
 		{name: "invalid applyTo", in: &networking.EnvoyFilter{
 			ConfigPatches: []*networking.EnvoyFilter_EnvoyConfigObjectPatch{
 				{
@@ -4418,7 +4420,6 @@ func TestValidateServiceEntries(t *testing.T) {
 				},
 				Endpoints: []*networking.WorkloadEntry{
 					{Address: "api-v1.istio.io", Ports: map[string]uint32{"http-valid1": 8080}},
-					{Address: "api-v2.istio.io", Ports: map[string]uint32{"http-valid2": 9080}},
 				},
 				Resolution: networking.ServiceEntry_DNS_ROUND_ROBIN,
 			},
@@ -4519,7 +4520,6 @@ func TestValidateServiceEntries(t *testing.T) {
 			},
 			valid: false,
 		},
-
 		{
 			name: "bad hosts", in: &networking.ServiceEntry{
 				Hosts: []string{"-"},
@@ -4817,7 +4817,6 @@ func TestValidateServiceEntries(t *testing.T) {
 			},
 			valid: false,
 		},
-
 		{
 			name: "unix socket, multiple service ports", in: &networking.ServiceEntry{
 				Hosts: []string{"uds.cluster.local"},
@@ -4853,6 +4852,19 @@ func TestValidateServiceEntries(t *testing.T) {
 				},
 			},
 			valid: true,
+		},
+		{
+			name: "workload selector without labels",
+			in: &networking.ServiceEntry{
+				Hosts: []string{"google.com"},
+				Ports: []*networking.Port{
+					{Number: 80, Protocol: "http", Name: "http-valid1"},
+					{Number: 8080, Protocol: "http", Name: "http-valid2"},
+				},
+				WorkloadSelector: &networking.WorkloadSelector{},
+			},
+			valid:   true,
+			warning: true,
 		},
 		{
 			name: "selector and endpoints", in: &networking.ServiceEntry{
@@ -4909,6 +4921,42 @@ func TestValidateServiceEntries(t *testing.T) {
 			valid: false,
 		},
 		{
+			name: "valid endpoint port", in: &networking.ServiceEntry{
+				Hosts: []string{"google.com"},
+				Ports: []*networking.Port{
+					{Number: 80, Protocol: "http", Name: "http-valid1", TargetPort: 81},
+				},
+				Resolution: networking.ServiceEntry_STATIC,
+				Endpoints: []*networking.WorkloadEntry{
+					{
+						Address: "1.1.1.1",
+						Ports: map[string]uint32{
+							"http-valid1": 8081,
+						},
+					},
+				},
+			},
+			valid: true,
+		},
+		{
+			name: "invalid endpoint port", in: &networking.ServiceEntry{
+				Hosts: []string{"google.com"},
+				Ports: []*networking.Port{
+					{Number: 80, Protocol: "http", Name: "http-valid1", TargetPort: 81},
+				},
+				Resolution: networking.ServiceEntry_STATIC,
+				Endpoints: []*networking.WorkloadEntry{
+					{
+						Address: "1.1.1.1",
+						Ports: map[string]uint32{
+							"http-valid1": 65536,
+						},
+					},
+				},
+			},
+			valid: false,
+		},
+		{
 			name: "protocol unset for addresses empty", in: &networking.ServiceEntry{
 				Hosts:     []string{"google.com"},
 				Addresses: []string{},
@@ -4933,6 +4981,32 @@ func TestValidateServiceEntries(t *testing.T) {
 			},
 			valid:   true,
 			warning: true,
+		},
+		{
+			name: "dns round robin with more than one endpoint", in: &networking.ServiceEntry{
+				Hosts:     []string{"google.com"},
+				Addresses: []string{},
+				Ports: []*networking.Port{
+					{Number: 8081, Protocol: "http", Name: "http-valid1"},
+				},
+				Endpoints: []*networking.WorkloadEntry{
+					{
+						Address: "api-v1.istio.io",
+						Ports: map[string]uint32{
+							"http-valid1": 8081,
+						},
+					},
+					{
+						Address: "1.1.1.2",
+						Ports: map[string]uint32{
+							"http-valid1": 8081,
+						},
+					},
+				},
+				Resolution: networking.ServiceEntry_DNS_ROUND_ROBIN,
+			},
+			valid:   false,
+			warning: false,
 		},
 	}
 
@@ -4963,6 +5037,7 @@ func TestValidateAuthorizationPolicy(t *testing.T) {
 		annotations map[string]string
 		in          proto.Message
 		valid       bool
+		Warning     bool
 	}{
 		{
 			name: "good",
@@ -5773,18 +5848,132 @@ func TestValidateAuthorizationPolicy(t *testing.T) {
 			},
 			valid: false,
 		},
+		{
+			name: "L7DenyWithFrom",
+			in: &security_beta.AuthorizationPolicy{
+				Action: security_beta.AuthorizationPolicy_DENY,
+				Selector: &api.WorkloadSelector{
+					MatchLabels: map[string]string{
+						"app": "httpbin",
+					},
+				},
+				Rules: []*security_beta.Rule{
+					{
+						From: []*security_beta.Rule_From{
+							{
+								Source: &security_beta.Source{
+									RequestPrincipals: []string{"example.com/sub-1"},
+								},
+							},
+						},
+					},
+				},
+			},
+			valid:   true,
+			Warning: true,
+		},
+		{
+			name: "L7DenyWithTo",
+			in: &security_beta.AuthorizationPolicy{
+				Action: security_beta.AuthorizationPolicy_DENY,
+				Selector: &api.WorkloadSelector{
+					MatchLabels: map[string]string{
+						"app": "httpbin",
+					},
+				},
+				Rules: []*security_beta.Rule{
+					{
+						To: []*security_beta.Rule_To{
+							{
+								Operation: &security_beta.Operation{
+									Methods: []string{"GET", "DELETE"},
+								},
+							},
+						},
+					},
+				},
+			},
+			valid:   true,
+			Warning: true,
+		},
+		{
+			name: "L7DenyWithFromAndTo",
+			in: &security_beta.AuthorizationPolicy{
+				Action: security_beta.AuthorizationPolicy_DENY,
+				Selector: &api.WorkloadSelector{
+					MatchLabels: map[string]string{
+						"app": "httpbin",
+					},
+				},
+				Rules: []*security_beta.Rule{
+					{
+						From: []*security_beta.Rule_From{
+							{
+								Source: &security_beta.Source{
+									Principals: []string{"temp"},
+								},
+							},
+						},
+						To: []*security_beta.Rule_To{
+							{
+								Operation: &security_beta.Operation{
+									Methods: []string{"GET", "DELETE"},
+								},
+							},
+						},
+					},
+				},
+			},
+			valid:   true,
+			Warning: true,
+		},
+		{
+			name: "L7DenyWithFromAndToWithPort",
+			in: &security_beta.AuthorizationPolicy{
+				Action: security_beta.AuthorizationPolicy_DENY,
+				Selector: &api.WorkloadSelector{
+					MatchLabels: map[string]string{
+						"app": "httpbin",
+					},
+				},
+				Rules: []*security_beta.Rule{
+					{
+						From: []*security_beta.Rule_From{
+							{
+								Source: &security_beta.Source{
+									Principals: []string{"temp"},
+								},
+							},
+						},
+						To: []*security_beta.Rule_To{
+							{
+								Operation: &security_beta.Operation{
+									Ports:   []string{"8080"},
+									Methods: []string{"GET", "DELETE"},
+								},
+							},
+						},
+					},
+				},
+			},
+			valid:   true,
+			Warning: false,
+		},
 	}
 
 	for _, c := range cases {
-		if _, got := ValidateAuthorizationPolicy(config.Config{
+		war, got := ValidateAuthorizationPolicy(config.Config{
 			Meta: config.Meta{
 				Name:        "name",
 				Namespace:   "namespace",
 				Annotations: c.annotations,
 			},
 			Spec: c.in,
-		}); (got == nil) != c.valid {
-			t.Errorf("got: %v\nwant: %v", got, c.valid)
+		})
+		if (got == nil) != c.valid {
+			t.Errorf("error: got: %v\nwant: %v", got, c.valid)
+		} else if (war != nil) != c.Warning {
+			t.Errorf("warning: got: %v\nwant: %v", war, c.valid)
 		}
 	}
 }
@@ -5804,6 +5993,14 @@ func TestValidateSidecar(t *testing.T) {
 				},
 			},
 		}, true, false},
+		{"workload selector without labels", &networking.Sidecar{
+			Egress: []*networking.IstioEgressListener{
+				{
+					Hosts: []string{"*/*"},
+				},
+			},
+			WorkloadSelector: &networking.WorkloadSelector{},
+		}, true, true},
 		{"import local namespace with wildcard", &networking.Sidecar{
 			Egress: []*networking.IstioEgressListener{
 				{
@@ -6042,6 +6239,18 @@ func TestValidateSidecar(t *testing.T) {
 				},
 			},
 		}, false, false},
+		{"ingress without port and with IPv6 endpoint", &networking.Sidecar{
+			Ingress: []*networking.IstioIngressListener{
+				{
+					DefaultEndpoint: "[::1]:110",
+				},
+			},
+			Egress: []*networking.IstioEgressListener{
+				{
+					Hosts: []string{"*/*"},
+				},
+			},
+		}, false, false},
 		{"ingress with duplicate ports", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
@@ -6067,6 +6276,31 @@ func TestValidateSidecar(t *testing.T) {
 				},
 			},
 		}, false, false},
+		{"ingress with duplicate ports and IPv6 endpoint", &networking.Sidecar{
+			Ingress: []*networking.IstioIngressListener{
+				{
+					Port: &networking.Port{
+						Protocol: "http",
+						Number:   90,
+						Name:     "foo",
+					},
+					DefaultEndpoint: "[::1]:110",
+				},
+				{
+					Port: &networking.Port{
+						Protocol: "tcp",
+						Number:   90,
+						Name:     "bar",
+					},
+					DefaultEndpoint: "[::1]:110",
+				},
+			},
+			Egress: []*networking.IstioEgressListener{
+				{
+					Hosts: []string{"*/*"},
+				},
+			},
+		}, false, false},
 		{"ingress without default endpoint", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
@@ -6083,7 +6317,7 @@ func TestValidateSidecar(t *testing.T) {
 				},
 			},
 		}, true, false},
-		{"ingress with invalid default endpoint IP", &networking.Sidecar{
+		{"ingress with invalid default endpoint in IPv4", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
 					Port: &networking.Port{
@@ -6092,6 +6326,18 @@ func TestValidateSidecar(t *testing.T) {
 						Name:     "foo",
 					},
 					DefaultEndpoint: "1.1.1.1:90",
+				},
+			},
+		}, false, false},
+		{"ingress with invalid default endpoint in IPv6", &networking.Sidecar{
+			Ingress: []*networking.IstioIngressListener{
+				{
+					Port: &networking.Port{
+						Protocol: "http",
+						Number:   90,
+						Name:     "foo",
+					},
+					DefaultEndpoint: "[1:1:1:1:1:1:1:1]:90",
 				},
 			},
 		}, false, false},
@@ -6112,7 +6358,7 @@ func TestValidateSidecar(t *testing.T) {
 				},
 			},
 		}, false, false},
-		{"ingress with invalid default endpoint port", &networking.Sidecar{
+		{"ingress with invalid default endpoint port in IPv4", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
 					Port: &networking.Port{
@@ -6129,7 +6375,24 @@ func TestValidateSidecar(t *testing.T) {
 				},
 			},
 		}, false, false},
-		{"valid ingress and egress", &networking.Sidecar{
+		{"ingress with invalid default endpoint port in IPv6", &networking.Sidecar{
+			Ingress: []*networking.IstioIngressListener{
+				{
+					Port: &networking.Port{
+						Protocol: "http",
+						Number:   90,
+						Name:     "foo",
+					},
+					DefaultEndpoint: "[::1]:hi",
+				},
+			},
+			Egress: []*networking.IstioEgressListener{
+				{
+					Hosts: []string{"*/*"},
+				},
+			},
+		}, false, false},
+		{"valid ingress and egress in IPv4", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
 					Port: &networking.Port{
@@ -6146,7 +6409,24 @@ func TestValidateSidecar(t *testing.T) {
 				},
 			},
 		}, true, false},
-		{"valid ingress and empty egress", &networking.Sidecar{
+		{"valid ingress and egress in IPv6", &networking.Sidecar{
+			Ingress: []*networking.IstioIngressListener{
+				{
+					Port: &networking.Port{
+						Protocol: "http",
+						Number:   90,
+						Name:     "foo",
+					},
+					DefaultEndpoint: "[::1]:9999",
+				},
+			},
+			Egress: []*networking.IstioEgressListener{
+				{
+					Hosts: []string{"*/*"},
+				},
+			},
+		}, true, false},
+		{"valid ingress and empty egress in IPv4", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
 					Port: &networking.Port{
@@ -6158,11 +6438,23 @@ func TestValidateSidecar(t *testing.T) {
 				},
 			},
 		}, true, false},
+		{"valid ingress and empty egress in IPv6", &networking.Sidecar{
+			Ingress: []*networking.IstioIngressListener{
+				{
+					Port: &networking.Port{
+						Protocol: "http",
+						Number:   90,
+						Name:     "foo",
+					},
+					DefaultEndpoint: "[::1]:9999",
+				},
+			},
+		}, true, false},
 		{"empty", &networking.Sidecar{}, false, false},
 		{"just outbound traffic policy", &networking.Sidecar{OutboundTrafficPolicy: &networking.OutboundTrafficPolicy{
 			Mode: networking.OutboundTrafficPolicy_ALLOW_ANY,
 		}}, true, false},
-		{"empty protocol", &networking.Sidecar{
+		{"empty protocol in IPv4", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
 					Port: &networking.Port{
@@ -6170,6 +6462,22 @@ func TestValidateSidecar(t *testing.T) {
 						Name:   "foo",
 					},
 					DefaultEndpoint: "127.0.0.1:9999",
+				},
+			},
+			Egress: []*networking.IstioEgressListener{
+				{
+					Hosts: []string{"*/*"},
+				},
+			},
+		}, true, false},
+		{"empty protocol in IPv6", &networking.Sidecar{
+			Ingress: []*networking.IstioIngressListener{
+				{
+					Port: &networking.Port{
+						Number: 90,
+						Name:   "foo",
+					},
+					DefaultEndpoint: "[::1]:9999",
 				},
 			},
 			Egress: []*networking.IstioEgressListener{
@@ -6292,7 +6600,7 @@ func TestValidateSidecar(t *testing.T) {
 				},
 			},
 		}, true, true},
-		{"ingress tls mode set to ISTIO_MUTUAL", &networking.Sidecar{
+		{"ingress tls mode set to ISTIO_MUTUAL in IPv4", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
 					Port: &networking.Port{
@@ -6307,7 +6615,22 @@ func TestValidateSidecar(t *testing.T) {
 				},
 			},
 		}, false, false},
-		{"ingress tls mode set to ISTIO_AUTO_PASSTHROUGH", &networking.Sidecar{
+		{"ingress tls mode set to ISTIO_MUTUAL in IPv6", &networking.Sidecar{
+			Ingress: []*networking.IstioIngressListener{
+				{
+					Port: &networking.Port{
+						Protocol: "http",
+						Number:   90,
+						Name:     "foo",
+					},
+					DefaultEndpoint: "[::1]:9999",
+					Tls: &networking.ServerTLSSettings{
+						Mode: networking.ServerTLSSettings_ISTIO_MUTUAL,
+					},
+				},
+			},
+		}, false, false},
+		{"ingress tls mode set to ISTIO_AUTO_PASSTHROUGH in IPv4", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
 					Port: &networking.Port{
@@ -6322,7 +6645,22 @@ func TestValidateSidecar(t *testing.T) {
 				},
 			},
 		}, false, false},
-		{"ingress tls invalid protocol", &networking.Sidecar{
+		{"ingress tls mode set to ISTIO_AUTO_PASSTHROUGH in IPv6", &networking.Sidecar{
+			Ingress: []*networking.IstioIngressListener{
+				{
+					Port: &networking.Port{
+						Protocol: "http",
+						Number:   90,
+						Name:     "foo",
+					},
+					DefaultEndpoint: "[::1]:9999",
+					Tls: &networking.ServerTLSSettings{
+						Mode: networking.ServerTLSSettings_AUTO_PASSTHROUGH,
+					},
+				},
+			},
+		}, false, false},
+		{"ingress tls invalid protocol in IPv4", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
 					Port: &networking.Port{
@@ -6337,7 +6675,22 @@ func TestValidateSidecar(t *testing.T) {
 				},
 			},
 		}, false, false},
-		{"ingress tls httpRedirect is not supported", &networking.Sidecar{
+		{"ingress tls invalid protocol in IPv6", &networking.Sidecar{
+			Ingress: []*networking.IstioIngressListener{
+				{
+					Port: &networking.Port{
+						Protocol: "tcp",
+						Number:   90,
+						Name:     "foo",
+					},
+					DefaultEndpoint: "[::1]:9999",
+					Tls: &networking.ServerTLSSettings{
+						Mode: networking.ServerTLSSettings_SIMPLE,
+					},
+				},
+			},
+		}, false, false},
+		{"ingress tls httpRedirect is not supported in IPv4", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
 					Port: &networking.Port{
@@ -6353,7 +6706,23 @@ func TestValidateSidecar(t *testing.T) {
 				},
 			},
 		}, false, false},
-		{"ingress tls SAN entries are not supported", &networking.Sidecar{
+		{"ingress tls httpRedirect is not supported in IPv6", &networking.Sidecar{
+			Ingress: []*networking.IstioIngressListener{
+				{
+					Port: &networking.Port{
+						Protocol: "tcp",
+						Number:   90,
+						Name:     "foo",
+					},
+					DefaultEndpoint: "[::1]:9999",
+					Tls: &networking.ServerTLSSettings{
+						Mode:          networking.ServerTLSSettings_SIMPLE,
+						HttpsRedirect: true,
+					},
+				},
+			},
+		}, false, false},
+		{"ingress tls SAN entries are not supported in IPv4", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
 					Port: &networking.Port{
@@ -6369,7 +6738,23 @@ func TestValidateSidecar(t *testing.T) {
 				},
 			},
 		}, false, false},
-		{"ingress tls credentialName is not supported", &networking.Sidecar{
+		{"ingress tls SAN entries are not supported in IPv6", &networking.Sidecar{
+			Ingress: []*networking.IstioIngressListener{
+				{
+					Port: &networking.Port{
+						Protocol: "tcp",
+						Number:   90,
+						Name:     "foo",
+					},
+					DefaultEndpoint: "[::1]:9999",
+					Tls: &networking.ServerTLSSettings{
+						Mode:            networking.ServerTLSSettings_SIMPLE,
+						SubjectAltNames: []string{"httpbin.com"},
+					},
+				},
+			},
+		}, false, false},
+		{"ingress tls credentialName is not supported in IPv4", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
 					Port: &networking.Port{
@@ -6378,6 +6763,22 @@ func TestValidateSidecar(t *testing.T) {
 						Name:     "foo",
 					},
 					DefaultEndpoint: "127.0.0.1:9999",
+					Tls: &networking.ServerTLSSettings{
+						Mode:           networking.ServerTLSSettings_SIMPLE,
+						CredentialName: "secret-name",
+					},
+				},
+			},
+		}, false, false},
+		{"ingress tls credentialName is not supported in IPv6", &networking.Sidecar{
+			Ingress: []*networking.IstioIngressListener{
+				{
+					Port: &networking.Port{
+						Protocol: "tcp",
+						Number:   90,
+						Name:     "foo",
+					},
+					DefaultEndpoint: "[::1]:9999",
 					Tls: &networking.ServerTLSSettings{
 						Mode:           networking.ServerTLSSettings_SIMPLE,
 						CredentialName: "secret-name",
@@ -6403,14 +6804,18 @@ func TestValidateSidecar(t *testing.T) {
 
 func TestValidateLocalityLbSetting(t *testing.T) {
 	cases := []struct {
-		name  string
-		in    *networking.LocalityLoadBalancerSetting
-		valid bool
+		name    string
+		in      *networking.LocalityLoadBalancerSetting
+		outlier *networking.OutlierDetection
+		err     bool
+		warn    bool
 	}{
 		{
-			name:  "valid mesh config without LocalityLoadBalancerSetting",
-			in:    nil,
-			valid: true,
+			name:    "valid mesh config without LocalityLoadBalancerSetting",
+			in:      nil,
+			outlier: nil,
+			err:     false,
+			warn:    false,
 		},
 
 		{
@@ -6426,7 +6831,9 @@ func TestValidateLocalityLbSetting(t *testing.T) {
 					},
 				},
 			},
-			valid: false,
+			outlier: &networking.OutlierDetection{},
+			err:     true,
+			warn:    false,
 		},
 		{
 			name: "invalid LocalityLoadBalancerSetting_Distribute total weight < 100",
@@ -6441,7 +6848,9 @@ func TestValidateLocalityLbSetting(t *testing.T) {
 					},
 				},
 			},
-			valid: false,
+			outlier: &networking.OutlierDetection{},
+			err:     true,
+			warn:    false,
 		},
 		{
 			name: "invalid LocalityLoadBalancerSetting_Distribute weight = 0",
@@ -6456,7 +6865,9 @@ func TestValidateLocalityLbSetting(t *testing.T) {
 					},
 				},
 			},
-			valid: false,
+			outlier: &networking.OutlierDetection{},
+			err:     true,
+			warn:    false,
 		},
 		{
 			name: "invalid LocalityLoadBalancerSetting specify both distribute and failover",
@@ -6477,7 +6888,9 @@ func TestValidateLocalityLbSetting(t *testing.T) {
 					},
 				},
 			},
-			valid: false,
+			outlier: &networking.OutlierDetection{},
+			err:     true,
+			warn:    false,
 		},
 
 		{
@@ -6490,7 +6903,9 @@ func TestValidateLocalityLbSetting(t *testing.T) {
 					},
 				},
 			},
-			valid: false,
+			outlier: &networking.OutlierDetection{},
+			err:     true,
+			warn:    false,
 		},
 		{
 			name: "invalid failover src contain '*' wildcard",
@@ -6502,7 +6917,9 @@ func TestValidateLocalityLbSetting(t *testing.T) {
 					},
 				},
 			},
-			valid: false,
+			outlier: &networking.OutlierDetection{},
+			err:     true,
+			warn:    false,
 		},
 		{
 			name: "invalid failover dst contain '*' wildcard",
@@ -6514,7 +6931,9 @@ func TestValidateLocalityLbSetting(t *testing.T) {
 					},
 				},
 			},
-			valid: false,
+			outlier: &networking.OutlierDetection{},
+			err:     true,
+			warn:    false,
 		},
 		{
 			name: "invalid failover src contain '/' separator",
@@ -6526,7 +6945,9 @@ func TestValidateLocalityLbSetting(t *testing.T) {
 					},
 				},
 			},
-			valid: false,
+			outlier: &networking.OutlierDetection{},
+			err:     true,
+			warn:    false,
 		},
 		{
 			name: "invalid failover dst contain '/' separator",
@@ -6538,14 +6959,54 @@ func TestValidateLocalityLbSetting(t *testing.T) {
 					},
 				},
 			},
-			valid: false,
+			outlier: &networking.OutlierDetection{},
+			err:     true,
+			warn:    false,
+		},
+		{
+			name: "failover priority provided without outlier detection policy",
+			in: &networking.LocalityLoadBalancerSetting{
+				FailoverPriority: []string{
+					"topology.istio.io/network",
+					"topology.kubernetes.io/region",
+					"topology.kubernetes.io/zone",
+					"topology.istio.io/subzone",
+				},
+			},
+			outlier: nil,
+			err:     false,
+			warn:    true,
+		},
+		{
+			name: "failover provided without outlier detection policy",
+			in: &networking.LocalityLoadBalancerSetting{
+				Failover: []*networking.LocalityLoadBalancerSetting_Failover{
+					{
+						From: "us-east",
+						To:   "eu-west",
+					},
+					{
+						From: "us-west",
+						To:   "eu-east",
+					},
+				},
+			},
+			outlier: nil,
+			err:     false,
+			warn:    true,
 		},
 	}
 
 	for _, c := range cases {
-		if got := validateLocalityLbSetting(c.in); (got == nil) != c.valid {
-			t.Errorf("ValidateLocalityLbSetting failed on %v: got valid=%v but wanted valid=%v: %v",
-				c.name, got == nil, c.valid, got)
+		v := validateLocalityLbSetting(c.in, c.outlier)
+		warn, err := v.Unwrap()
+		if (err != nil) != c.err {
+			t.Errorf("ValidateLocalityLbSetting failed on %v: got err=%v but wanted err=%v: %v",
+				c.name, err != nil, c.err, err)
+		}
+		if (warn != nil) != c.warn {
+			t.Errorf("ValidateLocalityLbSetting failed on %v: got warn=%v but wanted warn=%v: %v",
+				c.name, warn != nil, c.warn, warn)
 		}
 	}
 }
@@ -6913,6 +7374,77 @@ func TestValidateRequestAuthentication(t *testing.T) {
 							{
 								Name:   "x-foo",
 								Prefix: "Bearer ",
+							},
+						},
+					},
+				},
+			},
+			valid: false,
+		},
+		{
+			name:       "null outputClaimToHeader",
+			configName: constants.DefaultAuthenticationPolicyName,
+			in: &security_beta.RequestAuthentication{
+				JwtRules: []*security_beta.JWTRule{
+					{
+						Issuer:               "foo.com",
+						JwksUri:              "https://foo.com",
+						OutputClaimToHeaders: []*security_beta.ClaimToHeader{{}},
+					},
+				},
+			},
+			valid: false,
+		},
+		{
+			name:       "null claim value in outputClaimToHeader ",
+			configName: constants.DefaultAuthenticationPolicyName,
+			in: &security_beta.RequestAuthentication{
+				JwtRules: []*security_beta.JWTRule{
+					{
+						Issuer:  "foo.com",
+						JwksUri: "https://foo.com",
+						OutputClaimToHeaders: []*security_beta.ClaimToHeader{
+							{
+								Header: "x-jwt-claim",
+								Claim:  "",
+							},
+						},
+					},
+				},
+			},
+			valid: false,
+		},
+		{
+			name:       "null header value in outputClaimToHeader ",
+			configName: constants.DefaultAuthenticationPolicyName,
+			in: &security_beta.RequestAuthentication{
+				JwtRules: []*security_beta.JWTRule{
+					{
+						Issuer:  "foo.com",
+						JwksUri: "https://foo.com",
+						OutputClaimToHeaders: []*security_beta.ClaimToHeader{
+							{
+								Header: "",
+								Claim:  "sub",
+							},
+						},
+					},
+				},
+			},
+			valid: false,
+		},
+		{
+			name:       "invalid header value in outputClaimToHeader ",
+			configName: constants.DefaultAuthenticationPolicyName,
+			in: &security_beta.RequestAuthentication{
+				JwtRules: []*security_beta.JWTRule{
+					{
+						Issuer:  "foo.com",
+						JwksUri: "https://foo.com",
+						OutputClaimToHeaders: []*security_beta.ClaimToHeader{
+							{
+								Header: "abc%123",
+								Claim:  "sub",
 							},
 						},
 					},
@@ -7445,6 +7977,46 @@ func TestValidateTelemetry(t *testing.T) {
 						},
 					},
 				}},
+			},
+			"", "",
+		},
+		{
+			"multi-accessloggings",
+			&telemetry.Telemetry{
+				AccessLogging: []*telemetry.AccessLogging{
+					{
+						Providers: []*telemetry.ProviderRef{
+							{
+								Name: "envoy",
+							},
+						},
+					},
+					{
+						Providers: []*telemetry.ProviderRef{
+							{
+								Name: "otel",
+							},
+						},
+					},
+				},
+			},
+			"", "",
+		},
+		{
+			"multi-accesslogging-providers",
+			&telemetry.Telemetry{
+				AccessLogging: []*telemetry.AccessLogging{
+					{
+						Providers: []*telemetry.ProviderRef{
+							{
+								Name: "envoy",
+							},
+							{
+								Name: "otel",
+							},
+						},
+					},
+				},
 			},
 			"", "",
 		},

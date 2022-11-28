@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -114,7 +114,94 @@ func TestServiceEntry(t *testing.T) {
 
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			proxy := &model.Proxy{Metadata: &model.NodeMetadata{Labels: map[string]string{"app": "foo"}}}
+			proxy := &model.Proxy{
+				Labels:   map[string]string{"app": "foo"},
+				Metadata: &model.NodeMetadata{Labels: map[string]string{"app": "foo"}},
+			}
+			runSimulationTest(t, proxy, xds.FakeOptions{}, simulationTest{
+				name:   tt.name,
+				config: tt.config,
+				calls:  tt.calls,
+			})
+		})
+	}
+}
+
+const serviceEntriesWithDuplicatedHosts = `
+apiVersion: networking.istio.io/v1alpha3
+kind: ServiceEntry
+metadata:
+  name: istio-http
+spec:
+  hosts:
+  - istio.io
+  location: MESH_EXTERNAL
+  ports:
+  - number: 80
+    name: http
+    protocol: HTTP
+  resolution: DNS
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: ServiceEntry
+metadata:
+  name: istio-https
+spec:
+  hosts:
+  - istio.io
+  location: MESH_EXTERNAL
+  ports:
+  - number: 443
+    name: https
+    protocol: HTTPS
+  resolution: DNS
+`
+
+func TestServiceEntryDuplicatedHostname(t *testing.T) {
+	cases := []simulationTest{
+		{
+			name:   "service entries with reused hosts should have auto allocated the same IP address",
+			config: serviceEntriesWithDuplicatedHosts,
+			calls: []simulation.Expect{
+				{
+					Name: "HTTP call",
+					Call: simulation.Call{
+						Address:    "240.240.0.1",
+						Port:       80,
+						HostHeader: "istio.io",
+						Protocol:   simulation.HTTP,
+					},
+					Result: simulation.Result{
+						ListenerMatched: "0.0.0.0_80",
+						ClusterMatched:  "outbound|80||istio.io",
+					},
+				},
+				{
+					Name: "HTTPS call",
+					Call: simulation.Call{
+						Address:    "240.240.0.1",
+						Port:       443,
+						HostHeader: "istio.io",
+						Protocol:   simulation.HTTP,
+						TLS:        simulation.TLS,
+					},
+					Result: simulation.Result{
+						ListenerMatched: "240.240.0.1_443",
+						ClusterMatched:  "outbound|443||istio.io",
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			proxy := &model.Proxy{
+				Metadata: &model.NodeMetadata{
+					DNSCapture:      true,
+					DNSAutoAllocate: true,
+				},
+			}
 			runSimulationTest(t, proxy, xds.FakeOptions{}, simulationTest{
 				name:   tt.name,
 				config: tt.config,

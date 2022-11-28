@@ -20,10 +20,10 @@ import (
 	"strings"
 
 	"github.com/fatih/color"
-	admit_v1 "k8s.io/api/admissionregistration/v1"
+	admitv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	v1batch "k8s.io/api/batch/v1"
-	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	apimachinery_schema "k8s.io/apimachinery/pkg/runtime/schema"
@@ -62,7 +62,7 @@ type StatusVerifier struct {
 	iop              *v1alpha1.IstioOperator
 	successMarker    string
 	failureMarker    string
-	client           kube.ExtendedClient
+	client           kube.CLIClient
 }
 
 type StatusVerifierOptions func(*StatusVerifier)
@@ -85,7 +85,7 @@ func NewStatusVerifier(istioNamespace, manifestsPath, kubeconfig, context string
 	filenames []string, controlPlaneOpts clioptions.ControlPlaneOptions,
 	options ...StatusVerifierOptions,
 ) (*StatusVerifier, error) {
-	client, err := kube.NewExtendedClient(kube.BuildClientCmd(kubeconfig, context), "")
+	client, err := kube.NewCLIClient(kube.BuildClientCmd(kubeconfig, context), "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect Kubernetes API server, error: %v", err)
 	}
@@ -285,7 +285,7 @@ func (v *StatusVerifier) verifyPostInstall(visitor resource.Visitor, filename st
 				Resource(kinds).
 				Namespace(namespace).
 				Name(name).
-				VersionedParams(&meta_v1.GetOptions{}, scheme.ParameterCodec).
+				VersionedParams(&metav1.GetOptions{}, scheme.ParameterCodec).
 				Do(context.TODO()).
 				Into(deployment)
 			if err != nil {
@@ -307,7 +307,7 @@ func (v *StatusVerifier) verifyPostInstall(visitor resource.Visitor, filename st
 				Resource(kinds).
 				Namespace(namespace).
 				Name(name).
-				VersionedParams(&meta_v1.GetOptions{}, scheme.ParameterCodec).
+				VersionedParams(&metav1.GetOptions{}, scheme.ParameterCodec).
 				Do(context.TODO()).
 				Into(job)
 			if err != nil {
@@ -385,14 +385,14 @@ func (v *StatusVerifier) verifyPostInstall(visitor resource.Visitor, filename st
 }
 
 // Find Istio injector matching revision.  ("" matches any revision.)
-func (v *StatusVerifier) injectorFromCluster(revision string) (*admit_v1.MutatingWebhookConfiguration, error) {
-	hooks, err := v.client.Kube().AdmissionregistrationV1().MutatingWebhookConfigurations().List(context.Background(), meta_v1.ListOptions{})
+func (v *StatusVerifier) injectorFromCluster(revision string) (*admitv1.MutatingWebhookConfiguration, error) {
+	hooks, err := v.client.Kube().AdmissionregistrationV1().MutatingWebhookConfigurations().List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
 
 	revCount := 0
-	var hookmatch *admit_v1.MutatingWebhookConfiguration
+	var hookmatch *admitv1.MutatingWebhookConfiguration
 	for i, hook := range hooks.Items {
 		rev := hook.ObjectMeta.GetLabels()[label.IoIstioRev.Name]
 		if rev != "" {
@@ -449,19 +449,19 @@ func (v *StatusVerifier) reportStatus(crdCount, istioDeploymentCount int, err er
 }
 
 func fixTimestampRelatedUnmarshalIssues(un *unstructured.Unstructured) {
-	un.SetCreationTimestamp(meta_v1.Time{}) // UnmarshalIstioOperator chokes on these
+	un.SetCreationTimestamp(metav1.Time{}) // UnmarshalIstioOperator chokes on these
 
 	// UnmarshalIstioOperator fails because managedFields could contain time
 	// and gogo/protobuf/jsonpb(v1.3.1) tries to unmarshal it as struct (the type
 	// meta_v1.Time is really a struct) and fails.
-	un.SetManagedFields([]meta_v1.ManagedFieldsEntry{})
+	un.SetManagedFields([]metav1.ManagedFieldsEntry{})
 }
 
 // Find all IstioOperator in the cluster.
 func AllOperatorsInCluster(client dynamic.Interface) ([]*v1alpha1.IstioOperator, error) {
 	ul, err := client.
 		Resource(istioOperatorGVR).
-		List(context.TODO(), meta_v1.ListOptions{})
+		List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}

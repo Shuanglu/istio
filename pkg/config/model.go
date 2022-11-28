@@ -21,9 +21,9 @@ import (
 	"reflect"
 	"time"
 
-	gogojsonpb "github.com/gogo/protobuf/jsonpb"
-	gogoproto "github.com/gogo/protobuf/proto"
-	gogotypes "github.com/gogo/protobuf/types"
+	gogojsonpb "github.com/gogo/protobuf/jsonpb" // nolint: depguard
+	gogoproto "github.com/gogo/protobuf/proto"   // nolint: depguard
+	gogotypes "github.com/gogo/protobuf/types"   // nolint: depguard
 	"github.com/golang/protobuf/jsonpb"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"istio.io/api/label"
+	"istio.io/istio/pilot/pkg/util/protoconv"
 	"istio.io/istio/pkg/util/gogoprotomarshal"
 	"istio.io/istio/pkg/util/protomarshal"
 )
@@ -128,7 +129,7 @@ func ToProto(s Spec) (*anypb.Any, error) {
 	// golang/protobuf 1.4+ will have this interface. Older golang/protobuf are gogo compatible
 	// but also not used by Istio at all.
 	if pb, ok := s.(protoreflect.ProtoMessage); ok {
-		return anypb.New(pb)
+		return protoconv.MessageToAnyWithError(pb)
 	}
 
 	// gogo protobuf
@@ -151,7 +152,7 @@ func ToProto(s Spec) (*anypb.Any, error) {
 	if err := jsonpb.Unmarshal(bytes.NewReader(js), pbs); err != nil {
 		return nil, err
 	}
-	return anypb.New(pbs)
+	return protoconv.MessageToAnyWithError(pbs)
 }
 
 func ToMap(s Spec) (map[string]any, error) {
@@ -305,6 +306,20 @@ func (meta *Meta) Key() string {
 	return Key(
 		meta.GroupVersionKind.Group, meta.GroupVersionKind.Version, meta.GroupVersionKind.Kind,
 		meta.Name, meta.Namespace)
+}
+
+func (meta *Meta) ToObjectMeta() metav1.ObjectMeta {
+	return metav1.ObjectMeta{
+		Name:              meta.Name,
+		Namespace:         meta.Namespace,
+		UID:               kubetypes.UID(meta.UID),
+		ResourceVersion:   meta.ResourceVersion,
+		Generation:        meta.Generation,
+		CreationTimestamp: metav1.NewTime(meta.CreationTimestamp),
+		Labels:            meta.Labels,
+		Annotations:       meta.Annotations,
+		OwnerReferences:   meta.OwnerReferences,
+	}
 }
 
 func (c Config) DeepCopy() Config {

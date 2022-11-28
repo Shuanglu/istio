@@ -26,6 +26,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"istio.io/api/label"
 	"istio.io/istio/pkg/test/framework"
 	"istio.io/istio/pkg/test/framework/components/cluster"
 	kubecluster "istio.io/istio/pkg/test/framework/components/cluster/kube"
@@ -50,7 +51,6 @@ revision: "%s"
 `
 	tarGzSuffix = ".tar.gz"
 
-	istioRevLabel     = "istio.io/rev"
 	prodTag           = "prod"
 	canaryTag         = "canary"
 	latestRevisionTag = "latest"
@@ -354,7 +354,7 @@ func performRevisionTagsUpgradeFunc(previousVersion, previousValidatingWebhookNa
 
 		// change the old namespace that was pointing to the old prod (1-10-0) to point to the
 		// 'latest' revision by setting the `istio.io/rev=prod` label on the namespace
-		err := oldNs.SetLabel(istioRevLabel, prodTag)
+		err := oldNs.SetLabel(label.IoIstioRev.Name, prodTag)
 		if err != nil {
 			t.Fatal("could not remove istio.io/rev from old namespace")
 		}
@@ -381,7 +381,7 @@ func performRevisionTagsUpgradeFunc(previousVersion, previousValidatingWebhookNa
 }
 
 func checkVersion(t framework.TestContext, namespace, version string) error {
-	// func NewPodFetch(a istioKube.ExtendedClient, namespace string, selectors ...string) PodFetchFunc {
+	// func NewPodFetch(a istioKube.CLIClient, namespace string, selectors ...string) PodFetchFunc {
 	fetch := kubetest.NewPodFetch(t.Clusters().Default(), namespace)
 	pods, err := kubetest.CheckPodsAreReady(fetch)
 	if err != nil {

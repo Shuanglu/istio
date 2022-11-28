@@ -337,12 +337,8 @@ func TestConvertResources(t *testing.T) {
 				return output.VirtualService[i].Namespace+"/"+output.VirtualService[i].Name < output.VirtualService[j].Namespace+"/"+output.VirtualService[j].Name
 			})
 			goldenFile := fmt.Sprintf("testdata/%s.yaml.golden", tt.name)
-			if util.Refresh() {
-				res := append(output.Gateway, output.VirtualService...)
-				if err := os.WriteFile(goldenFile, marshalYaml(t, res), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
+			res := append(output.Gateway, output.VirtualService...)
+			util.CompareContent(t, marshalYaml(t, res), goldenFile)
 			golden := splitOutput(readConfig(t, goldenFile, validator))
 
 			// sort virtual services to make the order deterministic
@@ -384,7 +380,7 @@ func TestReferencePolicy(t *testing.T) {
 		{
 			name: "simple",
 			config: `apiVersion: gateway.networking.k8s.io/v1alpha2
-kind: ReferencePolicy
+kind: ReferenceGrant
 metadata:
   name: allow-gateways-to-ref-secrets
   namespace: default
@@ -409,7 +405,7 @@ spec:
 		{
 			name: "multiple in one",
 			config: `apiVersion: gateway.networking.k8s.io/v1alpha2
-kind: ReferencePolicy
+kind: ReferenceGrant
 metadata:
   name: allow-gateways-to-ref-secrets
   namespace: default
@@ -434,7 +430,7 @@ spec:
 		{
 			name: "multiple",
 			config: `apiVersion: gateway.networking.k8s.io/v1alpha2
-kind: ReferencePolicy
+kind: ReferenceGrant
 metadata:
   name: ns1
   namespace: default
@@ -448,7 +444,7 @@ spec:
     kind: Secret
 ---
 apiVersion: gateway.networking.k8s.io/v1alpha2
-kind: ReferencePolicy
+kind: ReferenceGrant
 metadata:
   name: ns2
   namespace: default
@@ -470,7 +466,7 @@ spec:
 		{
 			name: "same namespace",
 			config: `apiVersion: gateway.networking.k8s.io/v1alpha2
-kind: ReferencePolicy
+kind: ReferenceGrant
 metadata:
   name: allow-gateways-to-ref-secrets
   namespace: default
@@ -492,7 +488,7 @@ spec:
 		{
 			name: "same name",
 			config: `apiVersion: gateway.networking.k8s.io/v1alpha2
-kind: ReferencePolicy
+kind: ReferenceGrant
 metadata:
   name: allow-gateways-to-ref-secrets
   namespace: default
@@ -574,7 +570,7 @@ func splitOutput(configs []config.Config) OutputResources {
 
 func splitInput(configs []config.Config) KubernetesResources {
 	out := KubernetesResources{}
-	namespaces := sets.New()
+	namespaces := sets.New[string]()
 	for _, c := range configs {
 		namespaces.Insert(c.Namespace)
 		switch c.GroupVersionKind {
@@ -588,8 +584,6 @@ func splitInput(configs []config.Config) KubernetesResources {
 			out.TCPRoute = append(out.TCPRoute, c)
 		case gvk.TLSRoute:
 			out.TLSRoute = append(out.TLSRoute, c)
-		case gvk.ReferencePolicy:
-			out.ReferencePolicy = append(out.ReferencePolicy, c)
 		case gvk.ReferenceGrant:
 			out.ReferenceGrant = append(out.ReferenceGrant, c)
 		}

@@ -26,7 +26,7 @@ import (
 	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	prometheus_model "github.com/prometheus/common/model"
 	v1 "k8s.io/api/core/v1"
-	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"istio.io/istio/pkg/kube"
 )
@@ -36,7 +36,7 @@ type mockPromAPI struct {
 	cannedResponse map[string]prometheus_model.Value
 }
 
-func mockExecClientAuthNoPilot(_, _, _ string) (kube.ExtendedClient, error) {
+func mockExecClientAuthNoPilot(_, _, _ string) (kube.CLIClient, error) {
 	return &kube.MockClient{}, nil
 }
 
@@ -81,14 +81,14 @@ func TestMetrics(t *testing.T) {
 	}
 }
 
-func mockPortForwardClientAuthPrometheus(_, _, _ string) (kube.ExtendedClient, error) {
+func mockPortForwardClientAuthPrometheus(_, _, _ string) (kube.CLIClient, error) {
 	return &kube.MockClient{
 		DiscoverablePods: map[string]map[string]*v1.PodList{
 			"istio-system": {
 				"app=prometheus": {
 					Items: []v1.Pod{
 						{
-							TypeMeta: meta_v1.TypeMeta{
+							TypeMeta: metav1.TypeMeta{
 								Kind: "MockPod",
 							},
 						},
@@ -167,7 +167,7 @@ func (client mockPromAPI) Flags(ctx context.Context) (promv1.FlagsResult, error)
 	return nil, nil
 }
 
-func (client mockPromAPI) Query(ctx context.Context, query string, ts time.Time) (prometheus_model.Value, promv1.Warnings, error) {
+func (client mockPromAPI) Query(ctx context.Context, query string, ts time.Time, opts ...promv1.Option) (prometheus_model.Value, promv1.Warnings, error) {
 	canned, ok := client.cannedResponse[query]
 	if !ok {
 		return prometheus_model.Vector{}, nil, nil
@@ -179,7 +179,12 @@ func (client mockPromAPI) TSDB(ctx context.Context) (promv1.TSDBResult, error) {
 	return promv1.TSDBResult{}, nil
 }
 
-func (client mockPromAPI) QueryRange(ctx context.Context, query string, r promv1.Range) (prometheus_model.Value, promv1.Warnings, error) {
+func (client mockPromAPI) QueryRange(
+	ctx context.Context,
+	query string,
+	r promv1.Range,
+	opts ...promv1.Option,
+) (prometheus_model.Value, promv1.Warnings, error) {
 	canned, ok := client.cannedResponse[query]
 	if !ok {
 		return prometheus_model.Vector{}, nil, nil

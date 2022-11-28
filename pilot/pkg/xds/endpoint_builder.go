@@ -17,16 +17,19 @@ package xds
 import (
 	"crypto/md5"
 	"encoding/hex"
+	"net"
 	"sort"
 	"strconv"
 
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	endpoint "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
+	"google.golang.org/protobuf/types/known/structpb"
 	wrappers "google.golang.org/protobuf/types/known/wrapperspb"
 
 	networkingapi "istio.io/api/networking/v1alpha3"
 	"istio.io/istio/pilot/pkg/features"
 	"istio.io/istio/pilot/pkg/model"
+	"istio.io/istio/pilot/pkg/networking/core/v1alpha3/loadbalancer"
 	"istio.io/istio/pilot/pkg/networking/util"
 	"istio.io/istio/pilot/pkg/security/authn/factory"
 	"istio.io/istio/pkg/cluster"
@@ -44,14 +47,15 @@ var (
 
 type EndpointBuilder struct {
 	// These fields define the primary key for an endpoint, and can be used as a cache key
-	clusterName     string
-	network         network.ID
-	proxyView       model.ProxyView
-	clusterID       cluster.ID
-	locality        *core.Locality
-	destinationRule *model.ConsolidatedDestRule
-	service         *model.Service
-	clusterLocal    bool
+	clusterName            string
+	network                network.ID
+	proxyView              model.ProxyView
+	clusterID              cluster.ID
+	locality               *core.Locality
+	destinationRule        *model.ConsolidatedDestRule
+	service                *model.Service
+	clusterLocal           bool
+	failoverPriorityLabels []byte
 
 	// These fields are provided for convenience only
 	subsetName string
@@ -88,6 +92,8 @@ func NewEndpointBuilder(clusterName string, proxy *model.Proxy, push *model.Push
 		port:       port,
 	}
 
+	b.populateFailoverPriorityLabels()
+
 	// We need this for multi-network, or for clusters meant for use with AUTO_PASSTHROUGH.
 	if features.EnableAutomTLSCheckPolicies ||
 		b.push.NetworkManager().IsMultiNetworkEnabled() || model.IsDNSSrvSubsetKey(clusterName) {
@@ -105,6 +111,8 @@ func (b EndpointBuilder) DestinationRule() *networkingapi.DestinationRule {
 
 // Key provides the eds cache key and should include any information that could change the way endpoints are generated.
 func (b EndpointBuilder) Key() string {
+	// nolint: gosec
+	// Not security sensitive code
 	hash := md5.New()
 	hash.Write([]byte(b.clusterName))
 	hash.Write(Separator)
@@ -114,8 +122,16 @@ func (b EndpointBuilder) Key() string {
 	hash.Write(Separator)
 	hash.Write([]byte(strconv.FormatBool(b.clusterLocal)))
 	hash.Write(Separator)
+	if features.EnableHBONE {
+		hash.Write([]byte(strconv.FormatBool(b.proxy.IsProxylessGrpc())))
+		hash.Write(Separator)
+	}
 	hash.Write([]byte(util.LocalityToString(b.locality)))
 	hash.Write(Separator)
+	if len(b.failoverPriorityLabels) > 0 {
+		hash.Write(b.failoverPriorityLabels)
+		hash.Write(Separator)
+	}
 
 	if b.push != nil && b.push.AuthnPolicies != nil {
 		hash.Write([]byte(b.push.AuthnPolicies.GetVersion()))
@@ -208,6 +224,17 @@ func (e *LocalityEndpoints) AssertInvarianceInTest() {
 	}
 }
 
+func (b *EndpointBuilder) populateFailoverPriorityLabels() {
+	enableFailover, lb := getOutlierDetectionAndLoadBalancerSettings(b.DestinationRule(), b.port, b.subsetName)
+	if enableFailover {
+		lbSetting := loadbalancer.GetLocalityLbSetting(b.push.Mesh.GetLocalityLbSetting(), lb.GetLocalityLbSetting())
+		if lbSetting != nil && lbSetting.Distribute == nil &&
+			len(lbSetting.FailoverPriority) > 0 && (lbSetting.Enabled == nil || lbSetting.Enabled.Value) {
+			b.failoverPriorityLabels = util.GetFailoverPriorityLabels(b.proxy.Labels, lbSetting.FailoverPriority)
+		}
+	}
+}
+
 // build LocalityLbEndpoints for a cluster from existing EndpointShards.
 func (b *EndpointBuilder) buildLocalityLbEndpointsFromShards(
 	shards *model.EndpointShards,
@@ -215,7 +242,7 @@ func (b *EndpointBuilder) buildLocalityLbEndpointsFromShards(
 ) []*LocalityEndpoints {
 	localityEpMap := make(map[string]*LocalityEndpoints)
 	// get the subset labels
-	epLabels := getSubSetLabels(b.DestinationRule(), b.subsetName)
+	subsetLabels := getSubSetLabels(b.DestinationRule(), b.subsetName)
 
 	// Determine whether or not the target service is considered local to the cluster
 	// and should, therefore, not be accessed from outside the cluster.
@@ -241,8 +268,17 @@ func (b *EndpointBuilder) buildLocalityLbEndpointsFromShards(
 				continue
 			}
 			// Port labels
-			if !epLabels.SubsetOf(ep.Labels) {
+			if !subsetLabels.SubsetOf(ep.Labels) {
 				continue
+			}
+			// Draining endpoints are only sent to 'persistent session' clusters.
+			draining := ep.HealthStatus == model.Draining ||
+				features.DrainingLabel != "" && ep.Labels[features.DrainingLabel] != ""
+			if draining {
+				persistentSession := b.service.Attributes.Labels[features.PersistentSessionLabel] != ""
+				if !persistentSession {
+					continue
+				}
 			}
 
 			locLbEps, found := localityEpMap[ep.Locality.Label]
@@ -255,8 +291,11 @@ func (b *EndpointBuilder) buildLocalityLbEndpointsFromShards(
 				}
 				localityEpMap[ep.Locality.Label] = locLbEps
 			}
-			if ep.EnvoyEndpoint == nil {
-				ep.EnvoyEndpoint = buildEnvoyLbEndpoint(ep)
+			// Currently the HBONE implementation leads to different endpoint generation depending on if the
+			// client proxy supports HBONE or not. This breaks the cache.
+			// For now, just disable caching if the global HBONE flag is enabled.
+			if ep.EnvoyEndpoint == nil || features.EnableHBONE {
+				ep.EnvoyEndpoint = buildEnvoyLbEndpoint(b.proxy.IsProxylessGrpc(), ep)
 			}
 			// detect if mTLS is possible for this endpoint, used later during ep filtering
 			// this must be done while converting IstioEndpoints because we still have workload labels
@@ -317,11 +356,18 @@ func (b *EndpointBuilder) createClusterLoadAssignment(llbOpts []*LocalityEndpoin
 }
 
 // buildEnvoyLbEndpoint packs the endpoint based on istio info.
-func buildEnvoyLbEndpoint(e *model.IstioEndpoint) *endpoint.LbEndpoint {
+func buildEnvoyLbEndpoint(proxyless bool, e *model.IstioEndpoint) *endpoint.LbEndpoint {
 	addr := util.BuildAddress(e.Address, e.EndpointPort)
 	healthStatus := core.HealthStatus_HEALTHY
+	// This is enabled by features.SendUnhealthyEndpoints - otherwise they are not tracked.
 	if e.HealthStatus == model.UnHealthy {
 		healthStatus = core.HealthStatus_UNHEALTHY
+	}
+	if e.HealthStatus == model.Draining {
+		healthStatus = core.HealthStatus_DRAINING
+	}
+	if features.DrainingLabel != "" && e.Labels[features.DrainingLabel] != "" {
+		healthStatus = core.HealthStatus_DRAINING
 	}
 
 	ep := &endpoint.LbEndpoint{
@@ -340,6 +386,37 @@ func buildEnvoyLbEndpoint(e *model.IstioEndpoint) *endpoint.LbEndpoint {
 	// Istio endpoint level tls transport socket configuration depends on this logic
 	// Do not remove pilot/pkg/xds/fake.go
 	ep.Metadata = util.BuildLbEndpointMetadata(e.Network, e.TLSMode, e.WorkloadName, e.Namespace, e.Locality.ClusterID, e.Labels)
+
+	address, port := e.Address, e.EndpointPort
+	tunnelAddress, tunnelPort := address, model.HBoneInboundListenPort
+
+	supportsTunnel := false
+	// Otherwise supports tunnel
+	// Currently we only support HTTP tunnel, so just check for that. If we support more, we will
+	// need to pick the right one based on our support overlap.
+	if e.SupportsTunnel(model.TunnelHTTP) {
+		supportsTunnel = true
+	}
+	if proxyless {
+		// Proxyless client cannot handle tunneling, even if the server can
+		supportsTunnel = false
+	}
+	if !features.EnableHBONE {
+		supportsTunnel = false
+	}
+
+	// For outbound case, we selectively add tunnel info if the other side supports the tunnel
+	if supportsTunnel {
+		ep.HostIdentifier = &endpoint.LbEndpoint_Endpoint{Endpoint: &endpoint.Endpoint{
+			Address: util.BuildInternalAddressWithIdentifier("outbound-tunnel", net.JoinHostPort(address, strconv.Itoa(int(port)))),
+		}}
+		ep.Metadata.FilterMetadata[model.TunnelLabelShortName] = util.BuildTunnelMetadataStruct(tunnelAddress, address, int(port), tunnelPort)
+		ep.Metadata.FilterMetadata[util.EnvoyTransportSocketMetadataKey] = &structpb.Struct{
+			Fields: map[string]*structpb.Value{
+				model.TunnelLabelShortName: {Kind: &structpb.Value_StringValue{StringValue: model.TunnelHTTP}},
+			},
+		}
+	}
 
 	return ep
 }

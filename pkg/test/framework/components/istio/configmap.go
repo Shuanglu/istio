@@ -242,6 +242,8 @@ func (cm *configMap) updateConfigMap(c cluster.Cluster, cfgMap *corev1.ConfigMap
 }
 
 func hash(s string) string {
+	// nolint: gosec
+	// Test only code
 	h := md5.New()
 	_, _ = io.WriteString(h, s)
 	return hex.EncodeToString(h.Sum(nil))
@@ -271,16 +273,4 @@ func yamlToMeshConfig(mcYAML string) (*meshconfig.MeshConfig, error) {
 
 func meshConfigToYAML(mc *meshconfig.MeshConfig) (string, error) {
 	return protomarshal.ToYAML(mc)
-}
-
-func (cm *configMap) updateMeshConfig(c cluster.Cluster, cfgMap *corev1.ConfigMap, mc *meshconfig.MeshConfig) error {
-	// Store the updated MeshConfig back into the config map.
-	var err error
-	cfgMap.Data["mesh"], err = meshConfigToYAML(mc)
-	if err != nil {
-		return err
-	}
-
-	// Write the config map back to the cluster.
-	return cm.updateConfigMap(c, cfgMap)
 }

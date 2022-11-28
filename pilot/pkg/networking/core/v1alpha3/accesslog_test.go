@@ -21,7 +21,7 @@ import (
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	fileaccesslog "github.com/envoyproxy/go-control-plane/envoy/extensions/access_loggers/file/v3"
-	httppb "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	tcp "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/tcp_proxy/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/conversion"
 	"github.com/envoyproxy/go-control-plane/pkg/wellknown"
@@ -48,7 +48,7 @@ import (
 )
 
 func TestListenerAccessLog(t *testing.T) {
-	defaultFormatJSON, _ := protomarshal.ToJSON(EnvoyJSONLogFormatIstio)
+	defaultFormatJSON, _ := protomarshal.ToJSON(model.EnvoyJSONLogFormatIstio)
 
 	for _, tc := range []struct {
 		name       string
@@ -142,7 +142,7 @@ func TestListenerAccessLog(t *testing.T) {
 							// Verify tcp proxy access log.
 							verify(t, tc.encoding, tcpConfig.AccessLog[0], tc.wantFormat)
 						case wellknown.HTTPConnectionManager:
-							httpConfig := &httppb.HttpConnectionManager{}
+							httpConfig := &hcm.HttpConnectionManager{}
 							if err := filter.GetTypedConfig().UnmarshalTo(httpConfig); err != nil {
 								t.Fatal(err)
 							}
@@ -252,7 +252,7 @@ func newTestEnviroment() *model.Environment {
 		},
 	})
 
-	configStore := model.MakeIstioStore(memory.Make(collections.Pilot))
+	configStore := memory.Make(collections.Pilot)
 	configStore.Create(config.Config{
 		Meta: config.Meta{
 			Name:             "test",
@@ -295,7 +295,7 @@ var (
 		AccessLogFormat: &fileaccesslog.FileAccessLog_LogFormat{
 			LogFormat: &core.SubstitutionFormatString{
 				Format: &core.SubstitutionFormatString_JsonFormat{
-					JsonFormat: EnvoyJSONLogFormatIstio,
+					JsonFormat: model.EnvoyJSONLogFormatIstio,
 				},
 			},
 		},
@@ -331,9 +331,13 @@ func TestSetTCPAccessLog(t *testing.T) {
 		expected *tcp.TcpProxy
 	}{
 		{
-			name:  "telemetry",
-			push:  env.PushContext,
-			proxy: &model.Proxy{ConfigNamespace: "default", Metadata: &model.NodeMetadata{Labels: map[string]string{"app": "test"}}},
+			name: "telemetry",
+			push: env.PushContext,
+			proxy: &model.Proxy{
+				ConfigNamespace: "default",
+				Labels:          map[string]string{"app": "test"},
+				Metadata:        &model.NodeMetadata{Labels: map[string]string{"app": "test"}},
+			},
 			tcp:   &tcp.TcpProxy{},
 			class: networking.ListenerClassSidecarInbound,
 			expected: &tcp.TcpProxy{
@@ -346,9 +350,13 @@ func TestSetTCPAccessLog(t *testing.T) {
 			},
 		},
 		{
-			name:  "without-telemetry",
-			push:  env.PushContext,
-			proxy: &model.Proxy{ConfigNamespace: "default", Metadata: &model.NodeMetadata{Labels: map[string]string{"app": "without-telemetry"}}},
+			name: "without-telemetry",
+			push: env.PushContext,
+			proxy: &model.Proxy{
+				ConfigNamespace: "default",
+				Labels:          map[string]string{"app": "without-telemetry"},
+				Metadata:        &model.NodeMetadata{Labels: map[string]string{"app": "without-telemetry"}},
+			},
 			tcp:   &tcp.TcpProxy{},
 			class: networking.ListenerClassSidecarInbound,
 			expected: &tcp.TcpProxy{
@@ -379,17 +387,21 @@ func TestSetHttpAccessLog(t *testing.T) {
 		name     string
 		push     *model.PushContext
 		proxy    *model.Proxy
-		hcm      *httppb.HttpConnectionManager
+		hcm      *hcm.HttpConnectionManager
 		class    networking.ListenerClass
-		expected *httppb.HttpConnectionManager
+		expected *hcm.HttpConnectionManager
 	}{
 		{
-			name:  "telemetry",
-			push:  env.PushContext,
-			proxy: &model.Proxy{ConfigNamespace: "default", Metadata: &model.NodeMetadata{Labels: map[string]string{"app": "test"}}},
-			hcm:   &httppb.HttpConnectionManager{},
+			name: "telemetry",
+			push: env.PushContext,
+			proxy: &model.Proxy{
+				ConfigNamespace: "default",
+				Labels:          map[string]string{"app": "test"},
+				Metadata:        &model.NodeMetadata{Labels: map[string]string{"app": "test"}},
+			},
+			hcm:   &hcm.HttpConnectionManager{},
 			class: networking.ListenerClassSidecarInbound,
-			expected: &httppb.HttpConnectionManager{
+			expected: &hcm.HttpConnectionManager{
 				AccessLog: []*accesslog.AccessLog{
 					{
 						Name:       wellknown.FileAccessLog,
@@ -399,12 +411,16 @@ func TestSetHttpAccessLog(t *testing.T) {
 			},
 		},
 		{
-			name:  "without-telemetry",
-			push:  env.PushContext,
-			proxy: &model.Proxy{ConfigNamespace: "default", Metadata: &model.NodeMetadata{Labels: map[string]string{"app": "without-telemetry"}}},
-			hcm:   &httppb.HttpConnectionManager{},
+			name: "without-telemetry",
+			push: env.PushContext,
+			proxy: &model.Proxy{
+				ConfigNamespace: "default",
+				Labels:          map[string]string{"app": "without-telemetry"},
+				Metadata:        &model.NodeMetadata{Labels: map[string]string{"app": "without-telemetry"}},
+			},
+			hcm:   &hcm.HttpConnectionManager{},
 			class: networking.ListenerClassSidecarInbound,
-			expected: &httppb.HttpConnectionManager{
+			expected: &hcm.HttpConnectionManager{
 				AccessLog: []*accesslog.AccessLog{
 					{
 						Name:       wellknown.FileAccessLog,
@@ -437,9 +453,13 @@ func TestSetListenerAccessLog(t *testing.T) {
 		expected *listener.Listener
 	}{
 		{
-			name:     "telemetry",
-			push:     env.PushContext,
-			proxy:    &model.Proxy{ConfigNamespace: "default", Metadata: &model.NodeMetadata{Labels: map[string]string{"app": "test"}}},
+			name: "telemetry",
+			push: env.PushContext,
+			proxy: &model.Proxy{
+				ConfigNamespace: "default",
+				Labels:          map[string]string{"app": "test"},
+				Metadata:        &model.NodeMetadata{Labels: map[string]string{"app": "test"}},
+			},
 			listener: &listener.Listener{},
 			class:    networking.ListenerClassSidecarInbound,
 			expected: &listener.Listener{
@@ -457,9 +477,13 @@ func TestSetListenerAccessLog(t *testing.T) {
 			},
 		},
 		{
-			name:     "without-telemetry",
-			push:     env.PushContext,
-			proxy:    &model.Proxy{ConfigNamespace: "default", Metadata: &model.NodeMetadata{Labels: map[string]string{"app": "without-telemetry"}}},
+			name: "without-telemetry",
+			push: env.PushContext,
+			proxy: &model.Proxy{
+				ConfigNamespace: "default",
+				Labels:          map[string]string{"app": "without-telemetry"},
+				Metadata:        &model.NodeMetadata{Labels: map[string]string{"app": "without-telemetry"}},
+			},
 			listener: &listener.Listener{},
 			class:    networking.ListenerClassSidecarInbound,
 			expected: &listener.Listener{
